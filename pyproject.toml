@@ -11,17 +11,24 @@ requires-python = ">=3.11"
 license = { text = "AGPL-3.0-or-later" }
 authors = [{ name = "PA Agent Team" }]
 dependencies = [
-    "PyQt6>=6.6",
-    "pyqtgraph>=0.13",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "ai[vercel]==0.8.0; python_version >= '3.12'",
     "numpy>=1.26",
     "pandas>=2.2",
     "openai>=1.40",
     "tiktoken>=0.7",
     "jsonschema>=4.22",
     "pydantic>=2.7",
+    "cryptography>=42",
+]
+
+[project.optional-dependencies]
+desktop = [
+    "PyQt6>=6.6",
+    "pyqtgraph>=0.13",
     "MetaTrader5>=5.0; sys_platform == 'win32'",
     "tvdatafeed @ git+https://github.com/rongardF/tvdatafeed.git",
-    "cryptography>=42",
     "pywin32>=306; sys_platform == 'win32'",
     "akshare>=1.14",
     "baostock>=0.8",
@@ -30,8 +37,8 @@ dependencies = [
     "cursor-sdk>=0.1.0",
 ]
 
-[project.optional-dependencies]
 dev = [
+    "httpx>=0.28",
     "pytest>=8",
     "pytest-qt>=4.4",
     "hypothesis>=6",
@@ -44,6 +51,9 @@ pa-agent = "pa_agent.main:main"
 
 [tool.setuptools.packages.find]
 include = ["pa_agent*"]
+
+[tool.vercel]
+entrypoint = "app.py"
 
 [tool.black]
 line-length = 100

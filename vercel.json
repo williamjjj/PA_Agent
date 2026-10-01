@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "app.py": {
+      "maxDuration": 240,
+      "includeFiles": "{public/**,prompt_engineering/**}",
+      "excludeFiles": "{.venv/**,tests/**,docs/**,records/**,trade_records/**,experience/**,logs/**,config/**,qunyou/**,assets/**,tools/**}"
+    }
+  }
+}

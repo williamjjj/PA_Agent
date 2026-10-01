@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0c1013">
+  <meta name="description" content="PA Agent 价格行为分析工作台：导入 K 线，查看技术指标，通过两阶段 AI 流程辅助研究市场。">
+  <title>PA Agent · 价格行为分析工作台</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/vendor/lightweight-charts.js" defer></script>
+  <script src="/static/app.js" type="module"></script>
+</head>
+<body>
+  <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M5 3v18m-2-7h4V7H3zm9-11v18m-2-4h4V9h-4zm9-11v18m-2-9h4V5h-4z"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 15v5h16v-5"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v13m-5-5 5 5 5-5M4 17v4h16v-4"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 5v16M3 3c4 0 6 0 9 2 3-2 5-2 9-2v16c-4 0-6 0-9 2-3-2-5-2-9-2Z"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 2 8 4v6c0 5-8 10-8 10S4 17 4 12V6Zm-4 9 3 3 5-6"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 2 3 7 7 3-7 3-3 7-3-7-7-3 7-3Z"/></symbol>
+  </defs></svg>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="PA Agent 首页"><span class="brand-mark"><i></i><i></i><i></i></span><span>PA Agent<span class="brand-caption">价格行为 · 智能洞察</span></span></a>
+    <div class="workspace-label">工作空间 <span>个人版</span></div>
+    <nav aria-label="主导航"><a class="nav-item active" href="#workspace" aria-current="page"><svg><use href="#i-chart"/></svg>分析工作台<span class="nav-dot"></span></a><button class="nav-item" data-open="guide"><svg><use href="#i-book"/></svg>使用指南<small>↗</small></button></nav>
+    <div class="sidebar-bottom"><div class="engine-card"><span class="eyebrow">分析引擎</span><strong><span class="status-dot"></span> 两阶段决策流程</strong><p>先理解市场，再评估机会。</p><div class="engine-line"><span>市场诊断</span><span>→</span><span>交易决策</span></div></div><a class="source-link" href="https://github.com/williamjjj/PA_Agent" target="_blank" rel="noopener noreferrer">开源项目 · AGPL-3.0 <span>↗</span></a><div class="version">PA Agent Web <span>v0.1</span></div></div>
+  </aside>
+  <div class="app-shell">
+    <header class="topbar"><div><span class="muted">工作空间</span><span class="slash">/</span><span>分析工作台</span></div><div class="topbar-right"><span class="privacy"><svg><use href="#i-shield"/></svg>数据不留存</span><button id="access-button" class="account-button">访问设置 <span class="avatar">PA</span></button></div></header>
+    <main id="workspace">
+      <section class="page-heading"><div><div class="eyebrow">PRICE ACTION INTELLIGENCE</div><h1>从市场结构，发现交易逻辑<span class="heading-dot">.</span></h1><p>让每一次判断，都有清晰的价格行为依据。</p></div><button class="button secondary" data-open="import"><svg><use href="#i-upload"/></svg>导入 K 线</button></section>
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <div class="workspace-grid">
+        <section class="market-column" aria-label="行情与图表">
+          <div class="market-heading"><div class="instrument-symbol">X</div><div><div class="instrument-title"><h2 id="symbol-title">XAUUSD</h2><span id="source-badge" class="badge">演示数据</span></div><p id="instrument-detail">模拟黄金行情 · 非实时市场数据</p></div><button id="demo-button" class="text-button">载入演示 <span>↻</span></button></div>
+          <div class="stats-grid"><article class="stat"><span>最新收盘价</span><div id="latest-price">—</div><small id="price-change">等待数据</small></article><article class="stat"><span>区间最高 / 最低</span><div class="range-price" id="range-price">—</div><small>当前导入数据区间</small></article><article class="stat"><span>ATR <span class="tiny">14</span></span><div id="atr-value">—</div><small>平均真实波幅</small></article></div>
+          <section class="chart-card"><div class="chart-toolbar"><div class="chart-label"><svg><use href="#i-chart"/></svg><strong>价格走势</strong><span class="divider"></span><span id="timeframe-label">15 分钟</span></div><div class="chart-controls"><label class="indicator-toggle"><input id="ema-toggle" type="checkbox" checked><span class="ema-key"></span>EMA 20</label><button id="fit-chart" title="适应图表" aria-label="适应全部 K 线">⛶</button></div></div><div class="ohlc" id="ohlc">正在加载图表…</div><div id="chart" role="img" aria-label="K 线蜡烛图，绿色为上涨，红色为下跌；详细价格显示在图表上方。"></div><div class="chart-footer"><span><span class="status-dot"></span><span id="data-summary">等待数据</span></span><span>UTC · 仅已收盘 K 线</span></div></section>
+          <div class="data-note"><svg><use href="#i-shield"/></svg><span id="source-note">当前为模拟演示数据，仅用于体验图表功能。导入自己的数据，开始真实研究。</span></div>
+          <section class="process-card"><div class="section-title"><h2>把分析交给流程，而不是直觉</h2><span class="badge neutral">两阶段分析</span></div><div class="process-grid"><article><span class="step-number">01</span><div><h3>导入市场数据</h3><p>上传已收盘的 OHLCV 数据，自动计算 EMA 与 ATR。</p></div></article><article><span class="step-number">02</span><div><h3>识别价格结构</h3><p>判断市场周期、趋势方向与关键信号，执行风险闸门校验。</p></div></article><article><span class="step-number">03</span><div><h3>形成研究决策</h3><p>匹配策略、评估风险。条件不足时，明确选择等待。</p></div></article></div></section>
+        </section>
+        <aside class="analysis-panel" aria-label="AI 分析"><div class="analysis-heading"><span class="spark-box"><svg><use href="#i-spark"/></svg></span><h2>AI 分析助手</h2><span class="badge neutral">两阶段</span></div><p class="panel-description">从行情诊断到策略决策，逐层验证。</p>
+          <div class="model-box"><span class="eyebrow">模型 / AI GATEWAY</span><strong>DeepSeek V4.1 Flash<span class="model-dot"></span></strong><small id="model-status">正在检查访问配置</small></div>
+          <div class="analysis-config"><div><span>分析范围</span><strong id="bar-count">— 根 K 线</strong></div><div><span>决策倾向</span><strong>保守 <span class="tiny-label">风险优先</span></strong></div><div><span>数据来源</span><strong id="analysis-source">演示数据</strong></div></div>
+          <button id="analyze-button" class="button primary"><svg><use href="#i-spark"/></svg><span id="analyze-label">解锁 AI 分析</span><svg class="button-arrow"><use href="#i-arrow"/></svg></button><p class="analysis-hint" id="analysis-hint">访问口令仅用于保护付费模型调用</p>
+          <div class="analysis-divider"><span>分析进度</span><span id="analysis-state">尚未开始</span></div>
+          <div class="stage-block" id="stage-1"><span class="stage-marker">1</span><div><h3>市场诊断 <span id="stage-1-status">等待分析</span></h3><p>识别市场周期、方向与关键结构</p></div></div>
+          <div class="stage-block" id="stage-2"><span class="stage-marker">2</span><div><h3>策略与决策 <span id="stage-2-status">等待诊断</span></h3><p>策略匹配、风险校验与交易计划</p></div></div>
+          <div class="analysis-empty" id="analysis-empty"><div class="empty-orbit"><svg><use href="#i-chart"/></svg></div><h3>好的决策，从理解市场开始</h3><p>导入数据并开始分析<br>这里将展示你的市场洞察</p><span class="empty-line"></span></div>
+          <div id="result-summary" class="result-summary" hidden></div>
+          <button class="button secondary export-button" id="export-button" disabled><svg><use href="#i-download"/></svg>导出分析结果</button>
+        </aside>
+      </div>
+      <section id="results" class="results" hidden><div class="section-title"><h2>分析详情</h2><span class="badge neutral">当前会话</span></div><div class="result-grid"><article><h3>01 / 市场诊断</h3><div id="diagnosis-result"></div></article><article><h3>02 / 策略与风险</h3><div id="decision-result"></div></article></div><details><summary>查看结构化结果 JSON</summary><pre id="raw-result"></pre></details></section>
+      <footer class="page-footer"><p><svg><use href="#i-shield"/></svg>分析仅供研究参考，不构成投资建议。市场有风险，请独立判断。</p><a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">图表由 TradingView Lightweight Charts 提供 ↗</a></footer>
+    </main>
+  </div>
+  <dialog id="import-dialog"><form id="import-form"><div class="dialog-heading"><div><span class="eyebrow">MARKET DATA</span><h2>导入 K 线数据</h2></div><button type="button" class="close-button" data-close aria-label="关闭">×</button></div><p>上传 50–500 根已收盘 K 线。文件不存储在服务器中。</p><div class="form-row"><label>交易品种<input name="symbol" value="XAUUSD" pattern="[A-Za-z0-9._:/\-]{1,24}" maxlength="24" required></label><label>数据周期<select name="timeframe"><option value="1m">1 分钟</option><option value="5m">5 分钟</option><option value="15m" selected>15 分钟</option><option value="30m">30 分钟</option><option value="1h">1 小时</option><option value="4h">4 小时</option><option value="1d">日线</option></select></label></div><label class="file-zone"><svg><use href="#i-upload"/></svg><strong>选择 CSV 文件</strong><span>UTF-8 编码 · 最大 500 KB</span><input id="csv-file" name="file" type="file" accept=".csv,text/csv" required></label><div class="format-note">列名：<code>time,open,high,low,close,volume</code><br>时间按升序排列；支持 Unix 秒 / 毫秒、ISO 日期（默认 UTC）。</div><p id="import-error" class="form-error" role="alert"></p><div class="dialog-actions"><button type="button" id="template-button" class="text-button">下载示例 CSV ↓</button><button class="button primary" type="submit">导入并查看图表</button></div></form></dialog>
+  <dialog id="access-dialog"><form id="access-form"><div class="dialog-heading"><div><span class="eyebrow">PRIVATE WORKSPACE</span><h2>解锁 AI 分析</h2></div><button type="button" class="close-button" data-close aria-label="关闭">×</button></div><p id="access-description">输入管理员设置的访问口令。不是模型 API Key，口令不会保存在浏览器存储中。</p><label>访问口令<input id="access-secret" type="password" autocomplete="current-password" required maxlength="256"></label><p id="access-error" class="form-error" role="alert"></p><div class="dialog-actions"><button id="logout-button" type="button" class="text-button">退出访问</button><button class="button primary" type="submit">验证并解锁</button></div></form></dialog>
+  <dialog id="guide-dialog"><div class="dialog-heading"><div><span class="eyebrow">GETTING STARTED</span><h2>使用指南</h2></div><button class="close-button" data-close aria-label="关闭">×</button></div><ol class="guide-steps"><li><strong>准备数据</strong><p>导入 50–500 根升序排列、已收盘的 OHLCV 数据，并确认周期和品种。示例图表不代表真实行情。</p></li><li><strong>解锁分析</strong><p>管理员在服务端设置至少 24 个字符的随机访问口令 PA_WEB_ACCESS_SECRET。通过口令验证后，会话有效期为 8 小时。</p></li><li><strong>阅读结果</strong><p>阶段一识别结构，阶段二评估决策；风险闸门未通过时直接返回等待。不执行下单。</p></li><li><strong>下载记录</strong><p>完成后导出 JSON。刷新页面会清除导入数据和结果。网页版暂不支持 MT5、自动监控或云端历史。</p></li></ol><p class="format-note">模型调用会消耗 Gateway 配额。两阶段分析有时间限制；失败不会生成假结果。</p></dialog>
+</body>
+</html>
