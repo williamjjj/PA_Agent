@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from pa_agent.ai.decision_stance import build_decision_stance_guidance, normalize_stance
+from pa_agent.ai.incremental_shift import shift_kline_refs, shift_kline_refs_in_text
 from pa_agent.ai.pattern_routing import (
     STAGE1_DETECTED_PATTERNS_GUIDE,
     STAGE1_PATTERN_BRIEFS_BLOCK,
@@ -37,10 +38,11 @@ _KLINE_INDICATOR_NOTE = (
 _LANGUAGE_ZH_RULE = """
 ## 语言要求（阶段一、阶段二均必须遵守）
 
-- **思考过程**：扩展思考、内部推理、以及写入 JSON 的 `reason`、`diagnosis_confidence_reasoning`、`trade_confidence_reasoning`、`estimated_win_rate_reasoning` 等说明，**全程使用简体中文**。禁止用英文写推理段落或中英混杂的长句（常见缩写如 HH、HL、Spike、TR 可保留）。
-- **最终输出**：阶段一诊断 JSON、阶段二决策 JSON 中所有面向用户的字符串（含 `reasoning`、`key_factors`、`risk_assessment`、`watch_points`、`gate_trace`/`decision_trace` 的 `question` 与 `reason` 等）**一律使用简体中文**。
-- **仅允许英文或固定英文枚举**：JSON 字段名（schema 键名）、规定的枚举取值（如 `proceed`、`wait`、`bullish`、`bearish`）、策略文件名、K 线序号格式（如 `K1`、`K42-K1`）。
-- **价格行为术语**：思考与 JSON 说明中优先使用下列简体中文 PA 术语（见下节），避免自造词或仅用英文描述。
+- **通俗易懂（最重要）**：`reasoning`、`diagnosis_summary`、`next_bar_prediction.reasoning`、`next_cycle_prediction.reasoning`、`key_factors`、`risk_assessment`、`watch_points`、`decision_trace` 的 `question` 与 `reason` 等**面向用户的解释文本，必须通俗易懂**。像给刚入门的新手讲解一样，用日常语言描述市场发生了什么、为什么这样判断、接下来可能怎样。避免堆砌专业术语；用到专业概念时用一句话解释清楚。例如不要写"H2 顺势回撤信号确认"，而写"价格第二次回调后继续上涨，说明多头仍然主导"。
+- **思考过程**：扩展思考、内部推理、以及写入 JSON 的 `reason`、`diagnosis_confidence_reasoning`、`trade_confidence_reasoning`、`estimated_win_rate_reasoning` 等说明，**全程使用简体中文**。禁止用英文写推理段落或中英混杂的长句。
+- **最终输出**：阶段一诊断 JSON、阶段二决策 JSON 中所有面向用户的字符串**一律使用简体中文**，不得出现英文单词。
+- **仅允许英文**：JSON 字段名（schema 键名）、规定的枚举取值（如 `proceed`、`wait`、`bullish`、`bearish`）、K 线序号格式（如 `K1`、`K42-K1`）。**除此之外不得使用任何英文**。
+- **价格行为术语**：优先使用下列简体中文 PA 术语；英文缩写须附带中文解释（如"H2（第二次顺势回调）"），**不得单独使用英文缩写**。
 """.strip()
 
 _PA_TERMINOLOGY_ZH = """
@@ -64,7 +66,7 @@ _PA_TERMINOLOGY_ZH = """
 | 被套 | 突破方向上的交易者被迫止损离场 |
 | 磁力位 | 失败信号棒/入场棒极点吸引价格回测 |
 
-英文缩写（可保留）：SB/EB、OB/IB、H1/H2、L1/L2、MTR、AIL/AIS、20GB。
+英文缩写须加中文解释（不可单独使用英文）：SB/EB→信号棒/入场棒、OB/IB→外包棒/内包棒、H1/H2→第一次/第二次顺势回调、L1/L2→第一次/第二次逆势回调、MTR→主要趋势反转、AIL/AIS→持续看多/持续看空、20GB→约20根K线未触及均线、TR→交易区间、MM→测量移动（等距目标位）、SPS→尖峰顺势突破、SCS→尖峰连续尖峰。
 """.strip()
 
 _STAGE2_API_TASK_RULE = """
@@ -324,7 +326,9 @@ diagnosis_confidence 分档说明（全系统统一阈值 **50**）:
 - 50-69:周期位置存在歧义(如 trending_tr vs normal_channel),或长程背景与近期方向冲突(冲突不否决、不自动wait,仅降置信);需更多K线确认
 - 30-49:信号严重矛盾,周期位置难以判定,K线特征与多种状态都有部分重叠;阶段二应显著降低 trade_confidence
 - 0-29:数据不足以支撑任何诊断,或市场状态极度混乱(如极端交易区间)
+- **多尺度冲突硬顶**：当程序 `scale_conflict=true` 或 `trend_context.conflict=true` 时，`diagnosis_confidence` **不得超过 55**（程序会封顶）；执行跟近期窗口，长程只作风险参考
 - **<50 且 key_signals 为空**：阶段二强烈倾向 `order_type=不下单`（仍须经 §9–§10 完整评估，不得跳过）
+- 程序 `breakout_quality` / `mm_as_tp_ok` / `spike_aftermath_hint` 为客观辅助：仅 surviving 才主推区间 MM；pullback≠反转；sticky_reversal_risk 仅诊断
 
 **support_levels / resistance_levels 填写规则：**
 - `support_levels`：从近期 K 线结构中识别出的**当前价格下方**支撑价位，按由近到远排列，最多 3 个。每项填价格字符串（如 `"5402"` 或 `"5380-5400"` 表示区间），不识别时填空数组 `[]`。
@@ -697,10 +701,13 @@ def _build_next_cycle_prediction_instruction(*, enable_next_bar: bool) -> str:
 
 
 _NEXT_CYCLE_PREDICTION_INSTRUCTION = """\
-## 下一个市场周期预测任务（阶段二附加输出，不影响下单决策）
+## 下一个市场周期预测任务（阶段二附加输出·诊断旁注）
+
+**定位**：`next_cycle_prediction` 是**诊断旁注**，不是交易信号。实测方向边缘极薄（约 +1–2pt vs 抛硬币），
+**禁止**用其改写 `decision` / 否决顺 `direction` 的合格方案。交易门控只认阶段一方向、Always In 与硬禁令。
 
 完成 next_bar_prediction 后，必须在阶段二 JSON 顶层追加键 `next_cycle_prediction`，
-表达对当前市场周期结束后、下一个市场周期的预测：
+表达对当前市场周期结束后、下一个市场周期的**粗粒度**判断：
 
 ```json
 "next_cycle_prediction": {
@@ -716,7 +723,7 @@ _NEXT_CYCLE_PREDICTION_INSTRUCTION = """\
     "trading_range": 10,
     "extreme_tr": 4
   },
-  "reasoning": "简体中文理由，1–1500 字。须引用阶段一周期诊断、K 线结构演变特征，说明各周期概率依据。",
+  "reasoning": "简体中文。优先用三桶叙述：①延续当前结构 ②转换中/嵌套冲突 ③粘性反转风险。说明为何不是精确点预测。",
   "unpredictable": false,
   "features_used": ["stage1_diagnosis", "kline_features"]
 }
@@ -731,7 +738,7 @@ spike | micro_channel | tight_channel | normal_channel | broad_channel | trendin
 2. cycle 必须等于 probabilities 中数值最大的键；并列最大时按上方枚举的字面顺序取靠前者
    （即 spike → micro_channel → tight_channel → normal_channel → broad_channel → trending_tr → trading_range → extreme_tr）。
 3. direction 为独立的方向预测（bullish / bearish / neutral），不由 cycle argmax 强制推导；
-   表达的是预测下一个周期时市场整体偏向的方向。
+   表达的是预测下一个周期时市场整体偏向的方向——**仅供 UI/记录，不驱动下单**。
 4. reasoning 长度 1–1500 字，简体中文，仅讨论周期演变依据，不写下单价格、不写止损止盈。
 5. features_used 合法取值封闭列表（只能从下方选对应值，禁止自造字符串）：
    "stage1_diagnosis"、"kline_features"、"analysis_history"、"experience_library"、"stage2_decision"、"previous_prediction_summary"。
@@ -739,7 +746,7 @@ spike | micro_channel | tight_channel | normal_channel | broad_channel | trendin
    "kline_features" / "analysis_history" / "experience_library" / "previous_prediction_summary"。
 6. 数据不足（K 线数 < 8）、或阶段一诊断为 extreme_tr / unknown、或市场极端混乱时：
    设 unpredictable=true，cycle=null，direction=null，probabilities=null，reasoning 写明原因。
-7. 此预测**不**进入交易者方程、**不**改变 decision 中任意字段，仅作辅助参考。
+7. 此预测**不**进入交易者方程、**不**改变 decision 中任意字段，仅作辅助参考；程序亦不再用其硬拦单。
 """.strip()
 
 # txt files merged into each stage prompt (order preserved)
@@ -1052,13 +1059,21 @@ class PromptAssembler:
     def _normalize_prev_stage1_assistant_for_incremental(
         previous_record: AnalysisRecord,
         raw_content: str,
+        *,
+        shift_n: int = 0,
     ) -> str:
-        """Use validated diagnosis JSON in incremental context, not prose/markdown replies."""
+        """Use validated diagnosis JSON in incremental context, not prose/markdown replies.
+
+        When *shift_n* > 0, all K-line references in the previous diagnosis are
+        mechanically shifted by +shift_n so that the numbers match this run's
+        re-indexed K-line table (new bars occupy K1…K{shift_n}).
+        """
         from pa_agent.ai.json_validator import format_model_json_for_context
 
         diag = getattr(previous_record, "stage1_diagnosis", None) or {}
         if isinstance(diag, dict) and diag:
-            return json.dumps(diag, ensure_ascii=False, indent=2)
+            shifted = shift_kline_refs(diag, shift_n) if shift_n > 0 else diag
+            return json.dumps(shifted, ensure_ascii=False, indent=2)
 
         formatted = format_model_json_for_context(raw_content)
         if formatted:
@@ -1083,39 +1098,27 @@ class PromptAssembler:
         """Build Stage 1 as a continuation-based incremental update.
 
         Structure:
-          [0] system    — Stage 1 system prompt (same as full Stage 1)
-          [1] user      — Previous full Stage 1 user prompt (with K-line table)
-          [2] assistant — Previous Stage 1 reply
-          [3] user      — Incremental task (new K-lines only, no full table)
+          [0] system    - Stage 1 system prompt (same as full Stage 1)
+          [1] user      - FULL Stage 1 user prompt rebuilt from the CURRENT frame
+                          (complete re-indexed K-line table; K1 = newest closed bar)
+          [2] assistant - Previous Stage 1 reply (K-refs shifted by +new_bar_count)
+          [3] user      - Incremental task (new K-lines only, no full table)
 
-        Benefits vs old 2-message incremental:
-        - [system, user(S1)] prefix is IDENTICAL to full Stage 1 → prefix cache hit
-        - Full K-line table is in [1], not re-sent in [3] → saves ~14.5K tokens
-        - Stage 2 continuation can also cache-hit this prefix chain
+        Why [1] is rebuilt every round instead of reusing the previous record's
+        stored user message: the stored message freezes the K-line table at the
+        FIRST full analysis, so from the second incremental round onward the
+        model would see the initial snapshot plus only the newest bar, losing
+        every bar closed in between. Rebuilding costs the prefix cache hit but
+        guarantees the table the model reads always matches current reality and
+        the re-indexed coordinate system the incremental prompt describes.
         """
-        prev_s1_messages = getattr(previous_record, "stage1_messages", None) or []
         prev_s1_response = getattr(previous_record, "stage1_response", None) or {}
-
-        # Extract previous Stage 1 user message
-        prev_user_content = ""
-        for msg in prev_s1_messages:
-            if msg.get("role") == "user":
-                prev_user_content = msg["content"]
-                break
 
         # Extract previous Stage 1 assistant reply content
         prev_assistant_content = ""
         if isinstance(prev_s1_response, dict):
             prev_assistant_content = prev_s1_response.get("content", "") or ""
 
-        if not prev_user_content:
-            raise ValueError(
-                f"build_incremental_stage1: previous_record.stage1_messages "
-                f"contains no user message. "
-                f"stage1_messages has {len(prev_s1_messages)} items, "
-                f"roles={[m.get('role') for m in prev_s1_messages]}. "
-                f"record.meta: {getattr(previous_record, 'meta', '<missing>')!r}"
-            )
         prev_diag = getattr(previous_record, "stage1_diagnosis", None) or {}
         if not prev_assistant_content and not (
             isinstance(prev_diag, dict) and prev_diag
@@ -1131,9 +1134,10 @@ class PromptAssembler:
         prev_assistant_content = self._normalize_prev_stage1_assistant_for_incremental(
             previous_record,
             prev_assistant_content,
+            shift_n=int(new_bar_count or 0),
         )
 
-        prev_user_content = self._inject_market_features_block(prev_user_content, frame)
+        current_user_content = self._build_stage1_user_prompt(frame, analysis_mode=analysis_mode)
 
         prev_reasoning = ""
         if isinstance(prev_s1_response, dict):
@@ -1167,7 +1171,7 @@ class PromptAssembler:
 
         return [
             {"role": "system",    "content": system_content},
-            {"role": "user",      "content": prev_user_content},
+            {"role": "user",      "content": current_user_content},
             assistant_turn,
             {"role": "user",      "content": incremental_user_content},
         ]
@@ -1345,10 +1349,16 @@ class PromptAssembler:
         full_kline_table = self._render_kline_table(frame)
         full_feature_table = self._render_kline_feature_table(frame)
         simple_features_block = self._render_simple_market_features_block(frame)
+        prev_stage1_shifted = shift_kline_refs(
+            previous_record.stage1_diagnosis or {}, new_count
+        )
+        prev_stage2_shifted = shift_kline_refs(
+            previous_record.stage2_decision or {}, new_count
+        )
         previous_summary = {
             "meta": previous_record.meta.model_dump(),
-            "stage1_diagnosis": previous_record.stage1_diagnosis or {},
-            "stage2_decision": previous_record.stage2_decision or {},
+            "stage1_diagnosis": prev_stage1_shifted,
+            "stage2_decision": prev_stage2_shifted,
             "strategy_files_used": previous_record.strategy_files_used or [],
         }
         return (
@@ -1374,6 +1384,9 @@ class PromptAssembler:
             f"品种:{frame.symbol} 周期:{frame.timeframe} K线数量:{n_bars} 新增已收盘K线:{new_count}\n"
             f"（K线序号：1=最新已收盘，最大 K{n_bars}；"
             f"每个决策节点的 bar_range 由你自行选择子区间，勿超出 K{n_bars}-K1）\n\n"
+            f"⚠ 序号平移说明：本轮新增 {new_count} 根已收盘K线，上一轮所有 K 线序号整体 +{new_count}"
+            f"（上一轮 K1 在本轮为 K{new_count + 1}）。下方「上一轮已完成分析」中所有 K 引用"
+            f"（bar_range、reason、key_signals 等）均已由程序平移成本轮坐标，可直接引用，无需再换算。\n\n"
             "## 上一轮已完成分析（仅作为延续上下文）\n\n"
             f"```json\n{json.dumps(previous_summary, ensure_ascii=False, indent=2)}\n```\n\n"
             f"## 新增 K线数据(共{new_count}根，序号1=最新已收盘；含阳阴列)\n\n"
@@ -1415,17 +1428,28 @@ class PromptAssembler:
         new_count = max(0, min(new_bar_count, n_bars))
         new_kline_table = self._render_kline_table(frame, limit=new_count)
         new_feature_table = self._render_kline_feature_table(frame, limit=new_count)
+        shift_n = max(0, min(new_bar_count, n_bars))
+        prev_stage1_shifted = shift_kline_refs(
+            previous_record.stage1_diagnosis or {}, shift_n
+        )
+        prev_stage2_shifted = shift_kline_refs(
+            previous_record.stage2_decision or {}, shift_n
+        )
         previous_summary = {
             "meta": previous_record.meta.model_dump(),
-            "stage1_diagnosis": previous_record.stage1_diagnosis or {},
-            "stage2_decision": previous_record.stage2_decision or {},
+            "stage1_diagnosis": prev_stage1_shifted,
+            "stage2_decision": prev_stage2_shifted,
             "strategy_files_used": previous_record.strategy_files_used or [],
         }
         return (
             "## 阶段一增量更新任务\n\n"
             "上方是你上一轮完成的阶段一诊断。现在基于新增 K 线，更新诊断与闸门判断。\n"
             "完整 K 线数据已包含在上方阶段一用户消息中（K线序号已重新编号，"
-            "K1=当前最新已收盘K线），你可以回溯查看任何历史 K 线。\n\n"
+            "K1=当前最新已收盘K线），你可以回溯查看任何历史 K 线。\n"
+            "⚠ 序号平移说明：本轮新增了 " + str(shift_n) + " 根已收盘K线，"
+            "上一轮所有 K 线序号整体 +" + str(shift_n) + "（上一轮 K1 在本轮为 K" + str(shift_n + 1) + "）。"
+            "你上方看到的「上一轮阶段一诊断」中所有 K 引用（bar_range、reason、key_signals 等）"
+            "均已由程序平移成本轮坐标，可直接引用，无需再换算。\n\n"
             "⚠ 反锚定要求——这是增量分析最重要的原则：\n"
             "- 不要因为上一轮已得出结论就倾向于延续它；上一轮结论只是参考起点，不是约束。\n"
             "- 如果新增 K 线改变了市场结构（突破、反转、趋势加速/衰竭），必须果断推翻上一轮结论，而非在旧结论上微调。\n"

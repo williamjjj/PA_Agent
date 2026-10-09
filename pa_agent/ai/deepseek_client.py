@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from pa_agent.util.threading import CancelToken
 
 from pa_agent.config.settings import AIProviderSettings
+from pa_agent.ai.rate_limit import call_with_rate_limit_backoff, is_rate_limit_error
 from pa_agent.util.mask_secret import mask_secret
 from pa_agent.ai.mimo_compat import (
     ReasoningCache,
@@ -79,11 +80,11 @@ def _is_deepseek_native(base_url: str) -> bool:
 
 
 def _is_deepseek_model(model: str) -> bool:
-    """True for DeepSeek model ids; excludes QClaw ``openclaw`` and WorkBuddy ``openclaw_wb`` Agent aliases."""
+    """True for DeepSeek model ids; excludes QClaw/WorkBuddy/Cursor/TRAE/Qoder Agent aliases."""
     m = (model or "").lower()
-    if m in ("openclaw", "openclaw_wb", "openclaw_cs"):
+    if m in ("openclaw", "openclaw_wb", "openclaw_cs", "openclaw_twc", "openclaw_qc"):
         return False
-    if m.startswith("openclaw/") or m.startswith("openclaw_wb/") or m.startswith("openclaw_cs/"):
+    if m.startswith("openclaw/") or m.startswith("openclaw_wb/") or m.startswith("openclaw_cs/") or m.startswith("openclaw_twc/") or m.startswith("openclaw_qc/"):
         return False
     return "deepseek" in m
 
@@ -114,13 +115,15 @@ def _is_workbuddy_agent(settings: AIProviderSettings) -> bool:
 
 
 def _is_openclaw_agent_model(model: str) -> bool:
-    """True for QClaw/WorkBuddy/Cursor OpenClaw Agent model aliases."""
+    """True for QClaw/WorkBuddy/Cursor/TRAE/Qoder OpenClaw Agent model aliases."""
     m = (model or "").lower()
     return (
-        m in ("openclaw", "openclaw_wb", "openclaw_cs")
+        m in ("openclaw", "openclaw_wb", "openclaw_cs", "openclaw_twc", "openclaw_qc")
         or m.startswith("openclaw/")
         or m.startswith("openclaw_wb/")
         or m.startswith("openclaw_cs/")
+        or m.startswith("openclaw_twc/")
+        or m.startswith("openclaw_qc/")
     )
 
 
@@ -136,7 +139,12 @@ def supports_kv_prefix_chain(settings: AIProviderSettings | None) -> bool:
         return False
     if _is_openclaw_agent_model(settings.model):
         return False
-    return _is_deepseek_native(settings.base_url) or _is_deepseek_model(settings.model)
+    # B.AI 代理真实 DeepSeek 模型，同样支持 KV prefix cache（两级推理链）。
+    return (
+        _is_deepseek_native(settings.base_url)
+        or _is_bai(settings.base_url)
+        or _is_deepseek_model(settings.model)
+    )
 
 
 def _extract_cached_prompt_tokens(usage: Any) -> int:
@@ -188,10 +196,44 @@ def _is_minimax(base_url: str) -> bool:
     return "minimax.io" in url or "minimax.com" in url
 
 
+def _is_sensenova(base_url: str) -> bool:
+    """SenseNova (token.sensenova.cn) OpenAI-compatible gateway.
+
+    Provides deepseek-v4-flash 等 DeepSeek 模型的免费代理；其 max_tokens 上限为
+    384000（低于默认 _PRACTICAL_UNLIMITED_MAX_TOKENS），需单独限流以避免 400。
+    """
+    return "sensenova.cn" in (base_url or "").lower()
+
+
+def _is_bai(base_url: str) -> bool:
+    """B.AI (api.b.ai) OpenAI-compatible gateway.
+
+    B.AI 提供 deepseek-v4-flash 与 deepseek-v4-flash-vision-exp 等真实 DeepSeek
+    推理模型。与 DSH 内置的 B.AI 路由一致：
+      - thinking 请求格式用 DeepSeek 原生风格（thinking.type=adaptive +
+        output_config.effort），即 thinkingFormat=deepseek；
+      - max_tokens 上限极低（官方路由配 8192），远超默认 _GLOBAL_MAX_OUTPUT_TOKENS
+        （384000）会直接 400；
+      - 多轮对话必须回传 assistant 消息的 reasoning_content。
+    注意：检测 base_url 优先于 _is_deepseek_model —— 通过 B.AI 代理调用
+    deepseek 模型时，限流与格式随网关而非 DeepSeek 原生。
+    """
+    return "b.ai" in (base_url or "").lower()
+
+
 # Packy claude-officially returns 400 if max_tokens exceeds model output cap.
 _PACKY_CLAUDE_MAX_OUTPUT_TOKENS = 128_000
 # DeepSeek API: max_tokens must be in [1, 393216].
 _DEEPSEEK_MAX_OUTPUT_TOKENS = 393_216
+# SenseNova API: max_tokens is model-specific (per /v1/models max_output_length).
+# glm-5.2: [1, 131072]; deepseek-v4-flash / sensenova-*-flash-lite: [1, 65536].
+# Global gateway hard cap observed on several OpenAI-compatible proxies (incl. SenseNova).
+_GLOBAL_MAX_OUTPUT_TOKENS = 384_000
+_SENSENOVA_GLM_MAX_OUTPUT_TOKENS = 131_072
+_SENSENOVA_DEFAULT_MAX_OUTPUT_TOKENS = 65_536
+# B.AI (api.b.ai) 网关：deepseek-v4-flash 的 completion 上限（官方路由配 8192）。
+# 超过此值 B.AI 会返回 400，因此单独限流。
+_BAI_MAX_OUTPUT_TOKENS = 8_192
 
 
 def _model_uses_claude_adaptive(model: str) -> bool:
@@ -224,9 +266,9 @@ def _adaptive_output_effort(reasoning_effort: str | None) -> str:
 
 
 # Sent to OpenAI-compatible gateways; upstream may clamp below these values.
-_PRACTICAL_UNLIMITED_MAX_TOKENS = 524288
+_PRACTICAL_UNLIMITED_MAX_TOKENS = _GLOBAL_MAX_OUTPUT_TOKENS
 # Anthropic-style thinking requires budget_tokens < max_tokens.
-_PRACTICAL_UNLIMITED_THINKING_BUDGET = 524287
+_PRACTICAL_UNLIMITED_THINKING_BUDGET = _GLOBAL_MAX_OUTPUT_TOKENS - 1
 
 
 def _effort_budget_tokens(effort: str | None, *, max_output: int) -> int:
@@ -291,12 +333,24 @@ def _provider_max_output_tokens(settings: AIProviderSettings) -> int:
     """Per-gateway completion cap (max_tokens); avoids 400 from provider limits."""
     model = (settings.model or "").lower()
     if _is_packyapi(settings.base_url) and "claude" in model:
-        return _PACKY_CLAUDE_MAX_OUTPUT_TOKENS
-    if _is_deepseek_native(settings.base_url):
-        return _DEEPSEEK_MAX_OUTPUT_TOKENS
-    if _is_mimo(settings):
-        return mimo_max_output_tokens(settings.model)
-    return _PRACTICAL_UNLIMITED_MAX_TOKENS
+        cap = _PACKY_CLAUDE_MAX_OUTPUT_TOKENS
+    elif _is_deepseek_native(settings.base_url):
+        cap = _DEEPSEEK_MAX_OUTPUT_TOKENS
+    elif _is_sensenova(settings.base_url):
+        _smodel = (settings.model or "").lower()
+        if "glm" in _smodel:
+            cap = _SENSENOVA_GLM_MAX_OUTPUT_TOKENS
+        else:
+            cap = _SENSENOVA_DEFAULT_MAX_OUTPUT_TOKENS
+    elif _is_bai(settings.base_url):
+        # B.AI deepseek-v4-flash 等模型的 completion 上限很低（官方配 8192）。
+        # 检测 base_url 优先于 _is_deepseek_model，因为走 B.AI 网关时格式随网关。
+        cap = _BAI_MAX_OUTPUT_TOKENS
+    elif _is_mimo(settings):
+        cap = mimo_max_output_tokens(settings.model)
+    else:
+        cap = _PRACTICAL_UNLIMITED_MAX_TOKENS
+    return min(cap, _GLOBAL_MAX_OUTPUT_TOKENS)
 
 
 def _completion_max_tokens(
@@ -320,6 +374,41 @@ def _resolve_thinking_params(
     _thinking = thinking if thinking is not None else settings.thinking
     _effort = reasoning_effort if reasoning_effort is not None else settings.reasoning_effort
     model = settings.model or ""
+
+    if _is_sensenova(settings.base_url):
+        # SenseNova (token.sensenova.cn) 是商汤日日新网关，位于 OpenAI 兼容
+        # 代理，支持 deepseek-v4-flash 等模型。其 thinking.type 只接受
+        # "enabled" / "disabled" / "auto"，不接受 DeepSeek 原生的 "adaptive"。
+        # 注意：检测 base_url 优先于 _is_deepseek_model，因为用户通过
+        # SenseNova 代理调用 deepseek 模型时，参数格式随网关而非 DeepSeek 原生。
+        if _thinking:
+            extra_body = {"thinking": {"type": "enabled"}}
+            return extra_body, _effort or "medium"
+        else:
+            extra_body = {"thinking": {"type": "disabled"}}
+            return extra_body, None
+
+    if _is_bai(settings.base_url):
+        # B.AI (api.b.ai) 网关代理真实 DeepSeek 推理模型（deepseek-v4-flash 等），
+        # thinking 请求格式用 DeepSeek 原生风格（thinkingFormat=deepseek）：
+        # thinking.type=adaptive + output_config.effort。
+        # B.AI 声明的 reasoningEfforts 只有 low/medium/high（无 max），
+        # 把 "max" 夹到 "high" 以免上游 400。
+        # 注意：检测 base_url 优先于 _is_deepseek_model。
+        _effort = _adaptive_output_effort(_effort)
+        if _effort == "max":
+            _effort = "high"
+        if _thinking:
+            extra_body = {
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": _effort},
+            }
+            return extra_body, _effort
+        else:
+            extra_body = {
+                "thinking": {"type": "disabled"},
+            }
+            return extra_body, None
 
     if _is_deepseek_native(settings.base_url) or _is_deepseek_model(model):
         # DeepSeek v4+ requires thinking.type=adaptive + output_config.effort;
@@ -485,10 +574,15 @@ class DeepSeekClient:
         if not _thinking_on:
             create_kwargs["temperature"] = 0
         try:
-            response = client.chat.completions.create(
-                **create_kwargs,
-                # IMPORTANT: do NOT add temperature, top_p, presence_penalty,
-                # frequency_penalty — they are incompatible with thinking mode.
+            response = call_with_rate_limit_backoff(
+                lambda: client.chat.completions.create(
+                    **create_kwargs,
+                    # IMPORTANT: do NOT add temperature, top_p, presence_penalty,
+                    # frequency_penalty — they are incompatible with thinking mode.
+                ),
+                log=self._log,
+                stage_label="DeepSeek",
+                cancel_token=cancel_token,
             )
         except Exception as exc:
             latency_ms = (time.monotonic() - t0) * 1000
@@ -604,10 +698,22 @@ class DeepSeekClient:
             raise CancelledError("Request cancelled before API call")
 
         from pa_agent.ai.cursor_connector import is_openclaw_cs_model
+        from pa_agent.ai.qoder_connector import is_openclaw_qc_model
+        from pa_agent.ai.trae_connector import is_openclaw_twc_model
 
         if is_openclaw_cs_model(self._settings.model):
             raise RuntimeError(
                 "模型 openclaw_cs 必须使用 Cursor SDK 路由，但当前仍在使用 DeepSeekClient。"
+                "请在「AI 模型」设置中重新保存，或重启应用后再分析。"
+            )
+        if is_openclaw_twc_model(self._settings.model):
+            raise RuntimeError(
+                "模型 openclaw_twc 必须使用 TRAE Work CN 路由，但当前仍在使用 DeepSeekClient。"
+                "请在「AI 模型」设置中重新保存，或重启应用后再分析。"
+            )
+        if is_openclaw_qc_model(self._settings.model):
+            raise RuntimeError(
+                "模型 openclaw_qc 必须使用 Qoder CN 路由，但当前仍在使用 DeepSeekClient。"
                 "请在「AI 模型」设置中重新保存，或重启应用后再分析。"
             )
 
@@ -669,13 +775,26 @@ class DeepSeekClient:
             if _effort is not None:
                 stream_kwargs["reasoning_effort"] = _effort
 
-            try:
-                stream = client.chat.completions.create(**stream_kwargs)
-            except Exception:
-                # Retry without stream_options if provider rejects it
-                self._log.debug("stream_options not supported; retrying without it")
-                stream_kwargs.pop("stream_options", None)
-                stream = client.chat.completions.create(**stream_kwargs)
+            def _create_stream() -> Any:
+                try:
+                    return client.chat.completions.create(**stream_kwargs)
+                except Exception as _exc:  # noqa: BLE001
+                    # Rate-limit must bubble up so backoff can retry the same call
+                    # (don't silently downgrade to no-stream_options).
+                    if is_rate_limit_error(_exc):
+                        raise
+                    # Retry without stream_options if provider rejects it
+                    self._log.debug("stream_options not supported; retrying without it")
+                    kwargs_no_so = dict(stream_kwargs)
+                    kwargs_no_so.pop("stream_options", None)
+                    return client.chat.completions.create(**kwargs_no_so)
+
+            stream = call_with_rate_limit_backoff(
+                _create_stream,
+                log=self._log,
+                stage_label="DeepSeek",
+                cancel_token=cancel_token,
+            )
 
             for chunk in stream:
                 # Check cancellation on each chunk

@@ -1,6 +1,6 @@
 # PA Agent — AI K线分析辅助工具（桌面端）
 
-**交流 QQ 群：1016222782**
+**交流 QQ 群：1063897401**
 
 ---
 
@@ -47,9 +47,25 @@ python -m pa_agent.main
 
 > 如需隔离环境也可创建虚拟环境：`python -m venv .venv` 后激活再 `pip install -e .`。
 
-**安装内容**：PyQt6（GUI 框架）+ pyqtgraph（K 线图表绘图）+ numpy/pandas（数据处理）+ openai（AI API 客户端）+ **akshare/baostock（A 股数据源）** + json 校验、模型定义等全套依赖。
+**安装内容**：PyQt6（GUI 框架）+ pyqtgraph（K 线图表绘图）+ numpy/pandas（数据处理）+ openai（AI API 客户端）+ json 校验、模型定义等全套依赖。
 
 > 若需运行测试（pytest）或代码格式化（ruff/black），额外安装：`pip install -e ".[dev]"`。
+
+
+```cmd
+# 1. 安装 uv（仅需一次）
+pip install uv
+# 或官方脚本：curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 2. 首次运行或依赖变更时，make 自动创建 .venv 并同步依赖
+make uv-run
+
+# 3. 之后每次启动
+make uv-run
+# 或手动：uv run python -m pa_agent.main
+```
+
+> 运行测试：`make uv-test`，代码检查：`make uv-lint`。
 
 ---
 
