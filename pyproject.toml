@@ -53,7 +53,7 @@ pa-agent = "pa_agent.main:main"
 include = ["pa_agent*"]
 
 [tool.vercel]
-entrypoint = "app.py"
+entrypoint = "app:app"
 
 [tool.black]
 line-length = 100
