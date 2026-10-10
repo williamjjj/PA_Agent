@@ -24,11 +24,11 @@ class MemoryWriter:
 
 class AccountExperience:
     def __init__(self, store, uid):
-        self.entries = store.list(uid, "experience", limit=500)
+        self.store, self.uid = store, uid
 
     def read_top5(self, cycle_position):
         matches = []
-        for row in self.entries:
+        for row in self.store.experiences_for_cycle(self.uid, cycle_position):
             data = row["payload"]
             if data["cycle_position"] == cycle_position:
                 matches.append(ExperienceEntry(
@@ -56,7 +56,7 @@ class WebOrchestrator(TwoStageOrchestrator):
 
 
 def redact(value, settings):
-    text = json.dumps(value, ensure_ascii=False)
+    text = json.dumps(value, ensure_ascii=False, allow_nan=False)
     for field in SECRET_FIELDS:
         secret = getattr(settings, field)
         if secret and len(secret) >= 6:

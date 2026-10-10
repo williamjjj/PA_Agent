@@ -364,7 +364,8 @@ def run_analysis(data: AnalysisRequest, request: Request, current=Depends(user))
 
 @app.get("/api/records")
 def records(offset: int = Query(0, ge=0), current=Depends(user)):
-    return [{"id": row["id"], "created": row["created"], **row["payload"]["result"]}
+    return [{"id": row["id"], "created": row["created"],
+             **{key: row["payload"]["result"].get(key) for key in ("meta", "status", "usage", "error")}}
             for row in db().list(current["id"], "record", offset, 25)]
 
 
@@ -397,8 +398,8 @@ def chat(ident: str, data: ChatRequest, request: Request, current=Depends(user))
     def action(cancel, emit):
         from pa_agent.web.analysis import followup
         payload = owned(uid, "record", ident)["payload"]
-        if len(payload.get("chat", [])) >= 100:
-            raise ValueError("单份分析最多 100 轮追问，请开始新分析。")
+        if len(payload.get("chat", [])) >= 100 or sum(len(json.dumps(turn, ensure_ascii=False)) for turn in payload.get("chat", [])) > 500000:
+            raise ValueError("本记录已达追问轮数或内容上限，请开始新分析。")
         turn = followup(payload, data.question, cfg, cancel, emit)
         payload.setdefault("chat", []).append(turn)
         if not store.replace(uid, "record", ident, payload):
@@ -415,14 +416,21 @@ class ExperienceRequest(BaseModel):
 
 
 @app.get("/api/experience")
-def experiences(current=Depends(user)):
-    return db().list(current["id"], "experience", limit=500)
+def experiences(offset: int = Query(0, ge=0), current=Depends(user)):
+    rows = db().list(current["id"], "experience", offset=offset, limit=25)
+    return [{**row, "payload": {**row["payload"], "content": {"notes": row["payload"]["content"]["notes"]}}}
+            for row in rows]
+
+
+@app.get("/api/experience/{ident}")
+def experience_detail(ident: str, current=Depends(user)):
+    return owned(current["id"], "experience", ident)
 
 
 @app.post("/api/experience")
 def experience(data: ExperienceRequest, current=Depends(user)):
     uid, store = current["id"], db()
-    if len(store.list(uid, "experience", limit=500)) >= 500:
+    if store.count(uid, "experience") >= 500:
         raise HTTPException(409, "经验库已达 500 条，请先删除旧案例。")
     payload = owned(uid, "record", data.record_id)["payload"]
     if payload["result"]["status"] != "complete":

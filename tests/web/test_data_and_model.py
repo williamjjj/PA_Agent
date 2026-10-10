@@ -80,3 +80,17 @@ def test_model_pins_public_address_with_original_sni():
         with httpx.Client(transport=PublicTransport()) as client:
             assert client.get("https://api.example/v1").status_code == 200
     assert captured == [("https://1.1.1.1/v1", "api.example", "api.example")]
+
+
+def test_source_failure_is_reported_without_demo_fallback(monkeypatch):
+    from pa_agent.web.sources import SourceRequest, fetch_frame
+    from pa_agent.data.yfinance_source import YFinanceSource
+    monkeypatch.setattr(YFinanceSource, "connect", lambda self: None)
+    monkeypatch.setattr(YFinanceSource, "latest_snapshot", lambda self, n: (_ for _ in ()).throw(RuntimeError("unavailable")))
+    with pytest.raises(RuntimeError, match="unavailable"):
+        fetch_frame(SourceRequest(source="yfinance", symbol="GC=F", timeframe="15m"), WebSettings())
+
+
+def test_model_api_key_cannot_inject_header_values():
+    with pytest.raises(ValueError):
+        WebSettings(api_key="private-key\ninjected-header")

@@ -200,6 +200,22 @@ class Store:
                 .order_by(items.c.created.desc(), items.c.id).offset(offset).limit(limit)).mappings().all()
         return [dict(row) for row in rows]
 
+
+    def experiences_for_cycle(self, uid, cycle):
+        with self.engine.connect() as conn:
+            rows = conn.execute(select(items).where(
+                items.c.user_id == uid, items.c.kind == "experience",
+                items.c.payload["cycle_position"].as_string() == cycle
+            ).order_by(items.c.created.desc()).limit(5)).mappings().all()
+        return [dict(row) for row in rows]
+
+    def count(self, uid, kind):
+        from sqlalchemy import func
+        with self.engine.connect() as conn:
+            return conn.execute(select(func.count()).select_from(items).where(
+                items.c.user_id == uid, items.c.kind == kind)).scalar_one()
+
+
     def replace(self, uid, kind, ident, payload):
         with self.engine.begin() as conn:
             return bool(conn.execute(update(items).where(

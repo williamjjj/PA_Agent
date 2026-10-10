@@ -400,18 +400,24 @@ async function showHistory() {
   $("#history-prev").disabled = state.page === 0; $("#history-next").disabled = rows.length < 25; text("#history-page", "第 " + (state.page + 1) + " 页");
   openDialog("#history-dialog");
 }
-async function showExperience() {
+async function showExperience(offset = 0) {
   if (!requireUser()) return;
-  const rows = await json("/api/experience"), list = $("#experience-list"); list.replaceChildren();
+  const rows = await json("/api/experience?offset=" + offset), list = $("#experience-list"); list.replaceChildren();
   rows.forEach((r) => {
     const row = el("div", null, "history-row"), info = el("div"), remove = el("button", "删除", "quiet");
     info.append(el("strong", display(r.payload.cycle_position) + " · " + (r.payload.case_type === "success" ? "成功" : "失败")),
-      el("p", r.payload.content.notes), dataTree(r.payload.content, "案例内容"));
+      el("p", r.payload.content.notes));
+    const details = el("button", "查看完整案例", "quiet");
+    details.onclick = () => guard(async () => { const full = await json("/api/experience/" + r.id); info.append(dataTree(full.payload.content, "案例内容", true)); details.remove(); });
+    info.append(details);
     remove.onclick = () => guard(async () => { if (!confirm("删除这条经验？")) return; await json("/api/experience/" + r.id, "DELETE"); await showExperience(); });
     row.append(info, remove); list.append(row);
   });
   if (!rows.length) list.append(el("p", "在已完成的分析中点击“加入经验库”，保存复盘案例。", "empty-copy"));
-  openDialog("#experience-dialog");
+  const paging = el("div", null, "dialog-footer");
+  if (offset) { const prev = el("button", "上一页", "secondary"); prev.onclick = () => guard(() => showExperience(Math.max(0, offset - 25))); paging.append(prev); }
+  if (rows.length === 25) { const next = el("button", "下一页", "secondary"); next.onclick = () => guard(() => showExperience(offset + 25)); paging.append(next); }
+  list.append(paging); openDialog("#experience-dialog");
 }
 async function showPrompts() {
   if (!requireUser()) return;

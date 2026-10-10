@@ -108,4 +108,6 @@ node --test tests/web/test_stream.mjs
 uv run ruff check pa_agent/web tests/web pa_agent/bridge.py --select E9,F63,F7,F82
 ~~~
 
-测试不使用真实模型凭据。线上模型、行情供应商权限和 Windows MT5 连接需要使用各自账户验证。许可证见 [LICENSE](LICENSE)。
+测试不使用真实模型凭据。完整旧测试套件存在已在原分支复现的失败，不能将其视为全绿；详情见 [验证记录](docs/WEB_VALIDATION.md)。Web CI 严格检查新增账户/数据/流式功能与相关核心流程，并单独保留完整旧套件报告。
+
+线上模型、行情供应商权限和 Windows MT5 连接需要使用各自账户验证。许可证见 [LICENSE](LICENSE)。

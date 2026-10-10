@@ -50,6 +50,13 @@ class WebSettings(BaseModel):
             raise ValueError("模型地址须为 HTTPS，不可包含账号、查询参数或自定义端口。")
         return value
 
+    @field_validator("api_key")
+    @classmethod
+    def valid_header_key(cls, value):
+        if value and any(ord(c) < 33 or ord(c) > 126 for c in value):
+            raise ValueError("API Key 不可包含空白、换行或非 ASCII 字符。")
+        return value
+
     @field_validator("model")
     @classmethod
     def api_model(cls, value):

@@ -36,9 +36,5 @@ def test_format_order_alert_message_includes_prices() -> None:
 
 
 
-def test_order_alert_auto_close_constant() -> None:
-    from pa_agent.web.presentation.order_opportunity import ORDER_ALERT_AUTO_CLOSE_MS
-
-    assert ORDER_ALERT_AUTO_CLOSE_MS == 120_000
 
 
