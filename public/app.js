@@ -80,6 +80,16 @@ function setBusy(busy) {
 function stopTracking() {
   clearInterval(state.tracking); state.tracking = null; $("#tracking").checked = false;
 }
+function clearPrivateViews() {
+  state.controller?.abort(); state.controller = null; setBusy(false); stopTracking();
+  state.settings = null; state.prompts = [];
+  $$("dialog").forEach((dialog) => { if (dialog.id !== "account-dialog" && dialog.open) dialog.close(); });
+  $("#settings-fields").replaceChildren(); $("#prompt-editor").value = "";
+  $("#history-list").replaceChildren(); $("#experience-list").replaceChildren();
+  $("#case-form").reset();
+  $$("#chat-input, #old-password, #new-password").forEach((input) => { input.value = ""; });
+  clearResults();
+}
 function clearResults() {
   clearInterval(state.treeTimer);
   state.record = null;
@@ -447,17 +457,18 @@ $("#account-form").onsubmit = async (event) => {
   try {
     await json(form.get("mode") === "register" ? "/api/register" : "/api/session", "POST",
       { username: form.get("username"), password: form.get("password"), invite_code: form.get("invite_code") || "" });
-    state.epoch++; stopTracking(); renderChart(await json("/api/demo")); await refreshStatus();
+    state.epoch++; clearPrivateViews(); renderChart(await json("/api/demo")); await refreshStatus();
     $("#account-dialog").close(); event.target.reset(); toast("已登录 " + state.user.username);
   } catch (error) { text("#account-error", error.message); } finally { button.disabled = false; }
 };
 $("#logout-button").onclick = () => guard(async () => {
   state.epoch++; state.controller?.abort(); state.controller = null; setBusy(false); stopTracking();
-  await json("/api/logout", "POST", {}); state.record = null; state.settings = null; state.prompts = [];
-  $("#case-form textarea, #chat-input, #old-password, #new-password").forEach((input) => { input.value = ""; });
+  await json("/api/logout", "POST", {}); clearPrivateViews(); state.record = null; state.settings = null; state.prompts = [];
+  $$("#case-form textarea, #chat-input, #old-password, #new-password").forEach((input) => { input.value = ""; });
   $("#settings-fields").replaceChildren(); $("#prompt-editor").value = ""; $("#history-list").replaceChildren(); $("#experience-list").replaceChildren();
   renderChart(await json("/api/demo")); await refreshStatus(); toast("已退出登录。");
 });
+$("#settings-logout").onclick = () => $("#logout-button").click();
 $("#settings-form").onsubmit = async (event) => {
   event.preventDefault(); text("#settings-error", "");
   const changes = {}, clear = [];

@@ -5,17 +5,19 @@ Runtime: Linux, CPython 3.12.15, uv lock with production dependencies.
 
 ## Verified
 
-The strict Web/core request gate passed **58 tests**. The standalone SSE parser passed **4 tests**. Runtime-error lint and JavaScript syntax checks also passed.
+The strict Web/core request gate passed **59 tests**. The standalone SSE parser passed **4 tests**. Runtime-error lint and JavaScript syntax checks also passed.
 
 - Locked dependency installation succeeds. The installed development environment occupies approximately 322 MiB; production excludes development tools.
 - Root app:app imports successfully without PyQt6. GitHub's Vercel status reports a successful Preview deployment for migration commit f4ceb00.
 - Account tests cover encrypted secrets, secret-preserving updates and explicit deletion, tenant ownership, session revocation, password changes, CSRF, invitations, atomic leases and rate limits.
+- A public Yahoo Finance request returned 50 closed BTC-USD 1h bars successfully through the production source adapter.
 - Snapshot tests cover CSV validation, immutable chart/analysis input, bridge account isolation, source errors, source symbols, adjustment isolation and incremental overlap.
 - Model transport tests reject private IPs and verify public-IP pinning with the original Host and TLS SNI.
 - Prompt overrides are isolated from the desktop process-wide system-prompt cache.
 - SSE tests exercise byte-by-byte UTF-8/CRLF, exactly-once event delivery, error propagation, incomplete EOF and multiline data.
 - Browser smoke tests cover demo chart rendering, registration/login, model settings, source selection with an authenticated bridge snapshot, result panels, decision path, history/experience and follow-up UI.
 - Browser analysis and follow-up responses use explicit test fixtures, not paid model calls. Account/settings/bridge/history/experience operations use the real local backend.
+- Mobile account switching was verified: logout clears saved/unsaved form views, and a second account receives its own default model with no configured key.
 - Desktop 1440px and mobile 390px layouts have no horizontal overflow. Browser error collection remained empty through the tested flows.
 - The remote Preview redirects unauthenticated requests to Vercel login. No deployment protection bypass was used; production database/model behavior has not been asserted.
 
