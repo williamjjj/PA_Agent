@@ -53,11 +53,17 @@ async function api(url, method = "GET", body, signal) {
     let detail;
     try { detail = (await response.json()).detail; } catch { /* non-JSON gateway errors */ }
     const error = new Error(typeof detail === "string" ? detail : "请求失败（HTTP " + response.status + "）。");
+    if (response.status === 401) { state.user = null; state.settings = null; stopTracking(); text("#account-name", "会话已过期"); openDialog("#account-dialog"); }
     error.status = response.status; throw error;
   }
   return response;
 }
-async function json(url, method, body) { return (await api(url, method, body)).json(); }
+async function json(url, method, body) {
+  const epoch = state.epoch;
+  const data = await (await api(url, method, body)).json();
+  if (epoch !== state.epoch) throw new Error("账户已切换，请重新操作。");
+  return data;
+}
 function openDialog(id) { const d = $(id); if (!d.open) d.showModal(); }
 function requireUser() {
   if (state.user) return true;
@@ -220,7 +226,7 @@ function renderRecord(record) {
   renderChat();
   priceLines.forEach((line) => candles.removePriceLine(line)); priceLines = [];
   if (good) for (const [key, color] of [["entry_price", "#63e4ba"], ["stop_loss_price", "#f58e8e"], ["take_profit_price", "#70b4ef"], ["take_profit_price_2", "#9b94ed"]]) {
-    const value = Number(decision[key]);
+    const value = Number((r.chart_decision || decision)[key]);
     if (Number.isFinite(value) && value > 0) priceLines.push(candles.createPriceLine({ price: value, color, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: labels[key] }));
   }
 }
@@ -281,7 +287,7 @@ function sourceChanged() {
   $("#market-timeframe").replaceChildren(...source.timeframes.map((v) => { const option = el("option", v); option.value = v; return option; }));
   $("#market-timeframe").value = source.timeframes.includes("15m") ? "15m" : source.timeframes[0];
   $("#exchange-field").classList.toggle("hidden", source.id !== "tradingview");
-  text("#source-description", source.id === "tushare" ? "需在个人设置中填写 Tushare Token；分钟行情依账户权限提供。" : source.id === "tradingview" ? "填写准确交易所与品种代码；匿名访问或账户权限可能限制行情。" : source.id === "yfinance" ? "例如 GC=F、BTC-USD、AAPL；期货行情可能延迟，1 分钟历史窗口较短。" : "A 股与期货行情受交易时段和数据源限制，空数据会明确提示。");
+  text("#source-description", source.id === "mt5" ? "请在已登录 MT5 的 Windows 电脑运行桥接程序，每 60 秒同步到当前账户，详见 README。" : source.id === "tushare" ? "需在个人设置中填写 Tushare Token；分钟行情依账户权限提供。" : source.id === "tradingview" ? "填写准确交易所与品种代码；匿名访问或账户权限可能限制行情。" : source.id === "yfinance" ? "例如 GC=F、BTC-USD、AAPL；期货行情可能延迟，1 分钟历史窗口较短。" : "A 股与期货行情受交易时段和数据源限制，空数据会明确提示。");
 }
 async function refreshStatus() {
   const data = await json("/api/status");
@@ -435,13 +441,14 @@ $("#account-form").onsubmit = async (event) => {
   try {
     await json(form.get("mode") === "register" ? "/api/register" : "/api/session", "POST",
       { username: form.get("username"), password: form.get("password"), invite_code: form.get("invite_code") || "" });
-    state.epoch++; stopTracking(); clearResults(); await refreshStatus();
+    state.epoch++; stopTracking(); renderChart(await json("/api/demo")); await refreshStatus();
     $("#account-dialog").close(); event.target.reset(); toast("已登录 " + state.user.username);
   } catch (error) { text("#account-error", error.message); } finally { button.disabled = false; }
 };
 $("#logout-button").onclick = () => guard(async () => {
   state.epoch++; state.controller?.abort(); state.controller = null; setBusy(false); stopTracking();
   await json("/api/logout", "POST", {}); state.record = null; state.settings = null; state.prompts = [];
+  $("#case-form textarea, #chat-input, #old-password, #new-password").forEach((input) => { input.value = ""; });
   $("#settings-fields").replaceChildren(); $("#prompt-editor").value = ""; $("#history-list").replaceChildren(); $("#experience-list").replaceChildren();
   renderChart(await json("/api/demo")); await refreshStatus(); toast("已退出登录。");
 });

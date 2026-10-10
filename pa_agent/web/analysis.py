@@ -95,6 +95,16 @@ def analyze(frame, settings, store, uid, cancel, emit, previous=None, new_count=
         "stage1": raw["stage1_diagnosis"], "stage2": raw["stage2_decision"],
         "strategies": raw["strategy_files_used"], "usage": raw["usage_total"], "error": error,
     }
+    from pa_agent.web.presentation.chart_decision_overlay import enrich_decision_for_chart_overlay
+    from pa_agent.web.presentation.order_opportunity import has_order_opportunity
+    decision = (record.stage2_decision or {}).get("decision") or {}
+    result["opportunity"] = complete and has_order_opportunity(
+        decision, confidence_threshold=settings.decision_confidence_threshold)
+    result["chart_decision"] = enrich_decision_for_chart_overlay(
+        decision, stage2_full=record.stage2_decision, frame=frame,
+        stage1_json=record.stage1_diagnosis,
+        previous_record=AnalysisRecord.model_validate(previous) if previous else None,
+        cooldown_bars=settings.structure_flip_cooldown_bars)
     return result, raw
 
 

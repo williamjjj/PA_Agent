@@ -26,7 +26,7 @@ SOURCE_SPECS = {
 
 class SourceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    source: Literal["yfinance", "tradingview", "eastmoney", "eastmoney_futures", "akshare", "tushare"]
+    source: Literal["yfinance", "tradingview", "eastmoney", "eastmoney_futures", "akshare", "tushare", "mt5"]
     symbol: str = Field(pattern=r"^[A-Za-z0-9._:=^/-]{1,32}$")
     timeframe: str = Field(pattern=r"^(1m|5m|15m|30m|1h|4h|1d|1w|1M)$")
     exchange: str = Field(default="OANDA", pattern=r"^[A-Za-z0-9_]{1,24}$")
@@ -35,7 +35,8 @@ class SourceRequest(BaseModel):
 
 def catalog():
     return [{"id": key, "label": s[0], "available": importlib.util.find_spec(s[3]) is not None,
-             "symbol": s[4], "timeframes": s[5]} for key, s in SOURCE_SPECS.items()]
+             "symbol": s[4], "timeframes": s[5]} for key, s in SOURCE_SPECS.items()] + [{"id": "mt5", "label": "MT5 本地桥接", "available": True,
+            "symbol": "XAUUSD", "timeframes": ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]}]
 
 
 def fetch_frame(data: SourceRequest, settings):

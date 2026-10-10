@@ -37,7 +37,7 @@ class PublicTransport(httpx.HTTPTransport):
 class ModelClient:
     def __init__(self, settings):
         self.settings = settings
-        self.deadline = time.monotonic() + 200
+        self.deadline = time.monotonic() + 170
 
     def stream_chat(self, messages, *, cancel_token, on_content_token=None,
                     on_reasoning_token=None, thinking=None, reasoning_effort=None, **kwargs):

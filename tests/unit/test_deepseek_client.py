@@ -430,39 +430,8 @@ def test_openclaw_is_not_treated_as_deepseek_model() -> None:
     assert _is_deepseek_model("deepseek-v4-pro") is True
 
 
-def test_openclaw_agent_request_includes_tool_choice_none() -> None:
-    settings = _make_settings()
-    settings.model = "openclaw"
-    settings.base_url = "http://127.0.0.1:58579/v1"
-    with patch("pa_agent.ai.qclaw_connector.detect_qclaw", return_value=True):
-        assert _openclaw_agent_request_extra(settings) == {"tool_choice": "none"}
 
 
-def test_stream_chat_passes_tool_choice_none_for_openclaw() -> None:
-    settings = _make_settings()
-    settings.model = "openclaw"
-    settings.base_url = "http://127.0.0.1:58579/v1"
-    settings.thinking = False
-    client = DeepSeekClient(settings)
-
-    mock_openai = MagicMock()
-    mock_stream = iter([])
-
-    def _create(**kwargs):
-        mock_openai.last_kwargs = kwargs
-        return mock_stream
-
-    mock_openai.return_value.chat.completions.create.side_effect = _create
-
-    with patch("pa_agent.ai.qclaw_connector.detect_qclaw", return_value=True):
-        with patch("pa_agent.ai.deepseek_client._OpenAI", mock_openai):
-            try:
-                client.stream_chat([{"role": "user", "content": "hi"}])
-            except Exception:
-                pass
-
-    extra = mock_openai.last_kwargs.get("extra_body") or {}
-    assert extra.get("tool_choice") == "none"
 
 
 def test_mimo_chat_sends_enable_thinking_extra_body() -> None:

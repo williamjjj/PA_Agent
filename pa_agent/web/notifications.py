@@ -12,7 +12,7 @@ from pa_agent.web.model import PublicTransport
 
 def notify(settings, result):
     decision = (result.get("stage2") or {}).get("decision") or {}
-    if settings.notify_on_order_only and decision.get("order_type") in (None, "no_order", "不下单", "none"):
+    if settings.notify_on_order_only and not result.get("opportunity"):
         return
     text = "PA Agent · " + result["meta"]["symbol"] + "\n" + json.dumps(decision, ensure_ascii=False)[:3000]
     # Notification failures do not invalidate or duplicate a completed analysis.

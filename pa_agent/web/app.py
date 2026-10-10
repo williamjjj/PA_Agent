@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import queue
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -236,14 +237,39 @@ def market(data: SourceRequest, current=Depends(user)):
     if not store.rate_limit("market:"+uid, 60):
         raise HTTPException(429, "数据请求过于频繁，请稍后重试。")
     try:
-        frame = fetch_frame(data, settings_for(uid))
-    except (ValueError, ImportError) as exc:
+        if data.source == "mt5":
+            rows = store.list(uid, "bridge", limit=1)
+            if not rows or rows[0]["expires"] <= time.time():
+                raise HTTPException(422, "尚未收到 MT5 数据或桥接已离线，请运行本地 MT5 桥接程序。")
+            bridge = rows[0]["payload"]
+            if (bridge["symbol"], bridge["timeframe"]) != (data.symbol, data.timeframe) or len(bridge["bars"]) < data.count:
+                raise HTTPException(422, "MT5 桥接品种、周期或 K 线数量与当前选择不一致。")
+            frame = restore_frame({**bridge, "bars": bridge["bars"][-data.count:]})
+        else:
+            frame = fetch_frame(data, settings_for(uid))
+    except HTTPException:
+        raise
+    except (ValueError, ImportError):
         raise HTTPException(422, "数据不可用，请检查数据源、品种、周期及个人凭据。") from None
     except Exception:
         raise HTTPException(502, "数据源暂时不可用或无权访问该行情，请稍后重试。") from None
     chart = {**chart_data(frame), "source": data.source, "request": data.model_dump()}
     ident = store.put(uid, "snapshot", chart, ttl=3600)
     return {**chart, "snapshot_id": ident}
+
+
+
+
+@app.put("/api/bridge")
+def bridge_upload(data: ImportRequest, current=Depends(user)):
+    uid, store = current["id"], db()
+    if not store.rate_limit("bridge:"+uid, 60):
+        raise HTTPException(429, "桥接更新过于频繁，请稍后重试。")
+    chart = {**chart_data(checked_frame(data)), "source": "mt5"}
+    for row in store.list(uid, "bridge"):
+        store.remove(uid, "bridge", row["id"])
+    ident = store.put(uid, "bridge", chart, ttl=180)
+    return {"id": ident, "bars": len(chart["bars"])}
 
 
 class AnalysisRequest(BaseModel):
@@ -278,6 +304,7 @@ def streaming_job(request, current, action):
             finally:
                 store.release(uid, lease)
         worker = asyncio.create_task(asyncio.to_thread(run))
+        last_heartbeat = time.monotonic()
         try:
             while not worker.done() or not channel.empty():
                 if await request.is_disconnected():
@@ -285,6 +312,9 @@ def streaming_job(request, current, action):
                 try:
                     item = channel.get_nowait()
                 except queue.Empty:
+                    if time.monotonic() - last_heartbeat >= 5:
+                        yield ": heartbeat\n\n"
+                        last_heartbeat = time.monotonic()
                     await asyncio.sleep(0.1)
                     continue
                 yield "data: " + json.dumps(item, ensure_ascii=False, allow_nan=False) + "\n\n"
