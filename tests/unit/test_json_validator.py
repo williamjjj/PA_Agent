@@ -15,7 +15,7 @@ from pa_agent.ai.json_validator import (
     _strip_fences,
 )
 
-_SAMPLE = Path(__file__).resolve().parents[2] / "tools" / "stage2_raw_sample.txt"
+_SAMPLE = Path(__file__).resolve().parents[1] / "fixtures" / "stage2_raw_sample.txt"
 from tests.fixtures.validators import schema_test_validator
 
 _validator = schema_test_validator()

@@ -63,7 +63,7 @@ def test_chat_does_not_send_forbidden_params():
 
 
 def test_chat_extra_body_thinking_enabled():
-    """DeepSeek v4+ uses thinking.type=adaptive + output_config.effort."""
+    """DeepSeek Chat Completions uses enabled plus reasoning_effort."""
     settings = _make_settings()
     settings.base_url = "https://api.deepseek.com"
     settings.model = "deepseek-v4-pro"
@@ -80,8 +80,8 @@ def test_chat_extra_body_thinking_enabled():
 
     call_kwargs = mock_openai.return_value.chat.completions.create.call_args
     kwargs = call_kwargs.kwargs
-    assert kwargs["extra_body"]["thinking"]["type"] == "adaptive"
-    assert kwargs["extra_body"]["output_config"]["effort"] == "max"
+    assert kwargs["extra_body"]["thinking"]["type"] == "enabled"
+    assert "output_config" not in kwargs["extra_body"]
     assert kwargs["reasoning_effort"] == "max"
 
 
@@ -249,6 +249,7 @@ def test_chat_kkai_sends_thinking_object_not_reasoning_effort():
     """KKAI Claude: thinking budget in extra_body; reasoning_effort rejected upstream."""
     settings = _make_settings()
     settings.base_url = "https://api.kkone.vip/v1"
+    settings.model = "claude-opus-4-5"
     settings.thinking = True
     settings.reasoning_effort = "high"
     client = DeepSeekClient(settings)
@@ -261,13 +262,14 @@ def test_chat_kkai_sends_thinking_object_not_reasoning_effort():
         client.chat([{"role": "user", "content": "hi"}])
 
     kwargs = mock_openai.return_value.chat.completions.create.call_args.kwargs
-    assert kwargs["extra_body"]["thinking"] == {"type": "enabled", "budget_tokens": 999_998}
+    assert kwargs["extra_body"]["thinking"] == {"type": "enabled", "budget_tokens": 383_999}
     assert "reasoning_effort" not in kwargs
 
 
 def test_chat_kkai_thinking_off_sends_no_thinking_params():
     settings = _make_settings()
     settings.base_url = "https://api.kkone.vip/v1"
+    settings.model = "claude-opus-4-5"
     settings.thinking = False
     client = DeepSeekClient(settings)
 
@@ -326,6 +328,7 @@ def test_chat_yunwu_thinking_off_sends_nothing():
 def test_stream_kkai_passes_thinking_extra_body():
     settings = _make_settings()
     settings.base_url = "https://api.kkone.vip/v1"
+    settings.model = "claude-opus-4-5"
     settings.thinking = True
     settings.reasoning_effort = "medium"
     client = DeepSeekClient(settings)
@@ -361,7 +364,7 @@ def test_stream_kkai_passes_thinking_extra_body():
         )
 
     kwargs = mock_openai.return_value.chat.completions.create.call_args.kwargs
-    assert kwargs["extra_body"]["thinking"]["budget_tokens"] == 999_998
+    assert kwargs["extra_body"]["thinking"]["budget_tokens"] == 383_999
     assert "reasoning_effort" not in kwargs
     assert reply.reasoning_content == "think"
 

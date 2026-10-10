@@ -208,16 +208,14 @@ def test_stage2_plain_text_is_category_d_not_stub():
     assert result.category == "d"
 
 
-def test_no_order_with_non_null_price_is_category_c():
-    """不下单 with non-null entry_price is classified as category c.
-
-    **Validates: Requirements PR7.1 / PR3.1**
-    """
+def test_no_order_with_non_null_price_is_normalized_to_null():
+    """The no-order safety normalization removes prices before schema checks."""
     obj = _valid_stage2()
     obj["decision"]["entry_price"] = 2650.0  # must be null for 不下单
     result = validator.validate("stage2", json.dumps(obj))
-    assert isinstance(result, ValidationError)
-    assert result.category == "c"
+    assert isinstance(result, Ok)
+    assert result.obj["decision"]["entry_price"] is None
+    assert obj["decision"]["entry_price"] == 2650.0
 
 
 def test_markdown_fenced_json_is_accepted():
@@ -246,7 +244,8 @@ def test_truncated_stage1_can_repair_when_lenient_config():
     truncated = json.dumps(obj, ensure_ascii=False)[:-1] + ","
     result = lenient_validator.validate("stage1", truncated)
     assert isinstance(result, Ok), result
-    assert result.obj["gate_result"] == "unknown"
+    assert result.obj["gate_result"] == "proceed"
+    assert "程序" in result.obj["gate_trace"][0]["reason"]
     assert len(result.obj["gate_trace"]) >= 1
 
 

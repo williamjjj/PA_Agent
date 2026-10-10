@@ -50,6 +50,43 @@ def test_secret_encryption_preservation_and_account_isolation(clients):
     assert not a.get("/api/settings").json()["api_key_configured"]
 
 
+def test_model_discovery_uses_only_current_accounts_key_and_never_saves_probe(clients):
+    import httpx
+    a, b = clients
+    for client, key in ((a, "alice-test-key"), (b, "bob-test-key")):
+        client.put("/api/settings", json={"settings": {"api_key": key}})
+    seen = []
+    def handle(request):
+        seen.append((request.headers["authorization"], str(request.url)))
+        return httpx.Response(200, json={"object": "list", "data": [
+            {"id": "model-b", "object": "model", "created": 1, "owned_by": "test"},
+            {"id": "model-a", "object": "model", "created": 1, "owned_by": "test"}]})
+    with patch("pa_agent.web.model.PublicTransport", side_effect=lambda **kw: httpx.MockTransport(handle)):
+        for client in (a, b):
+            response = client.post("/api/models", json={"settings": {"base_url": "https://models.example/v1"}})
+            assert response.status_code == 200, response.text
+            assert response.json() == {"models": ["model-a", "model-b"]}
+        assert a.post("/api/models", json={"settings": {}, "clear_secrets": ["api_key"]}).status_code == 422
+    assert [key for key, _ in seen] == ["Bearer alice-test-key", "Bearer bob-test-key"]
+    assert all(url == "https://models.example/v1/models" for _, url in seen)
+    assert a.get("/api/settings").json()["base_url"] == "https://api.deepseek.com/v1"
+    assert a.get("/api/settings").json()["api_key_configured"]
+    assert TestClient(app, headers=HEADERS).post("/api/models", json={"settings": {}}).status_code == 401
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 429, 500])
+def test_provider_errors_never_echo_credentials(clients, status):
+    import httpx
+    a, _ = clients
+    def handle(request):
+        return httpx.Response(status, json={"error": {"message": "secret-provider-key"}})
+    with patch("pa_agent.web.model.PublicTransport", side_effect=lambda **kw: httpx.MockTransport(handle)):
+        result = a.post("/api/models", json={"settings": {"api_key": "secret-provider-key"}})
+    assert result.status_code == 502
+    assert "secret-provider-key" not in result.text
+    assert not a.get("/api/settings").json()["api_key_configured"]
+
+
 def test_tenant_objects_not_accessible_even_with_known_ids(clients):
     a, b = clients
     uid = a.get("/api/status").json()["user"]["id"]

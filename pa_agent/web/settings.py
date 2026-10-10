@@ -14,7 +14,7 @@ SECRET_FIELDS = ("api_key", "tradingview_password", "tushare_token", "feishu_web
 class WebSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     base_url: str = Field(default="https://api.deepseek.com/v1", max_length=300)
-    model: str = Field(default="deepseek-chat", min_length=1, max_length=120)
+    model: str = Field(default="deepseek-flash", min_length=1, max_length=120)
     api_key: str = Field(default="", max_length=4096)
     thinking: bool = False
     reasoning_effort: Literal["low", "medium", "high", "max"] = "high"
@@ -75,6 +75,8 @@ class WebSettings(BaseModel):
 
     @model_validator(mode="after")
     def validate_prompts(self):
+        if self.max_tokens >= self.context_window:
+            raise ValueError("最大输出须小于上下文窗口，以预留输入空间。")
         allowed = {p.name for p in PROMPTS.glob("*.txt")}
         if set(self.prompt_overrides) - allowed:
             raise ValueError("提示词文件不存在。")

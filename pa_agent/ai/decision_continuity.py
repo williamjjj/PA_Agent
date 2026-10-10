@@ -382,7 +382,6 @@ def build_continuity_context(
     cooldown_bars: int = DEFAULT_STRUCTURE_FLIP_COOLDOWN_BARS,
 ) -> dict[str, Any]:
     """Assemble continuity facts for prompt injection and CSV audit."""
-    symbol = getattr(frame, "symbol", "") or ""
     timeframe = getattr(frame, "timeframe", "") or ""
     tick = infer_price_tick_from_frame(frame)
 
@@ -391,19 +390,8 @@ def build_continuity_context(
     prev_source = "analysis_record"
     prev_stage1 = stage1_from_previous_record(previous_record)
 
-    if prev_decision is None:
-        csv_row = load_last_trade_csv_row(symbol, timeframe)
-        if csv_row:
-            prev_source = "trade_csv"
-            prev_time = csv_row.get("record_time") or prev_time
-            prev_decision = {
-                "order_direction": csv_row.get("order_direction"),
-                "order_type": csv_row.get("order_type"),
-                "entry_price": csv_row.get("entry_price"),
-                "stop_loss_price": csv_row.get("stop_loss_price"),
-                "take_profit_price": csv_row.get("take_profit_price"),
-                "invalidation_condition": csv_row.get("invalidation_condition"),
-            }
+    # Web callers supply an explicitly owned record. Never fall back to a
+    # process-wide desktop CSV: it has no tenant identity.
 
     current_ms = getattr(frame, "snapshot_ts_local_ms", None)
     bars_since = bars_elapsed_between(prev_time, current_ms, timeframe)

@@ -396,15 +396,15 @@ def _resolve_thinking_params(
             return extra_body, None
 
     if _is_deepseek_native(settings.base_url) or _is_deepseek_model(model):
-        # DeepSeek v4+ requires thinking.type=adaptive + output_config.effort;
-        # the old "enabled"/"disabled" values are no longer accepted.
-        # Also covers DeepSeek models proxied through non-native gateways (e.g. QClaw).
+        # Chat Completions uses enabled/disabled and reasoning_effort. Do not
+        # mix in the Anthropic-format adaptive/output_config parameters.
+        # https://api-docs.deepseek.com/guides/thinking_mode/
         if _thinking:
             extra_body: dict[str, Any] = {
-                "thinking": {"type": "adaptive"},
-                "output_config": {"effort": _adaptive_output_effort(_effort)},
+                "thinking": {"type": "enabled"},
             }
-            return extra_body, _effort or "medium"
+            effort = _adaptive_output_effort(_effort)
+            return extra_body, "high" if effort == "medium" else effort
         else:
             extra_body = {
                 "thinking": {"type": "disabled"},

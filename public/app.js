@@ -46,6 +46,7 @@ function toast(message, error = false) {
   toastTimer = setTimeout(() => box.classList.add("hidden"), 6500);
 }
 async function api(url, method = "GET", body, signal) {
+  const epoch = state.epoch;
   const response = await fetch(url, { method, credentials: "same-origin", cache: "no-store", signal,
     headers: { ...(method === "GET" ? {} : { "x-pa-request": "1" }), ...(body ? { "Content-Type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined });
@@ -53,7 +54,11 @@ async function api(url, method = "GET", body, signal) {
     let detail;
     try { detail = (await response.json()).detail; } catch { /* non-JSON gateway errors */ }
     const error = new Error(typeof detail === "string" ? detail : "请求失败（HTTP " + response.status + "）。");
-    if (response.status === 401) { state.user = null; state.settings = null; stopTracking(); text("#account-name", "会话已过期"); openDialog("#account-dialog"); }
+    if (response.status === 401 && epoch === state.epoch) {
+      state.epoch++; state.user = null; clearPrivateViews();
+      text("#account-name", "会话已过期"); text("#model-badge", "尚未配置模型");
+      $("#logout-button").classList.add("hidden"); openDialog("#account-dialog");
+    }
     error.status = response.status; throw error;
   }
   return response;
@@ -89,6 +94,10 @@ function clearPrivateViews() {
   $("#case-form").reset();
   $$("#chat-input, #old-password, #new-password").forEach((input) => { input.value = ""; });
   clearResults();
+  state.data = null; state.page = 0;
+  candles?.setData([]); ema?.setData([]);
+  text("#symbol-title", "尚未载入行情");
+  for (const id of ["instrument-detail", "source-badge", "latest-price", "price-change", "range-price", "atr-value", "data-summary", "source-note", "ohlc"]) text("#" + id, "—");
 }
 function clearResults() {
   clearInterval(state.treeTimer);
@@ -385,6 +394,25 @@ async function openSettings() {
         if (type === "number") { input.min = min; input.max = max; input.required = true; }
       }
       label.append(input); grid.append(label);
+      if (name === "model") {
+        const choices = el("datalist"), fetchModels = el("button", "检测连接并获取模型", "secondary small"), hint = el("small", "读取当前地址，空白 Key 使用已保存值；不会保存设置。", "muted");
+        choices.id = "model-options"; input.setAttribute("list", choices.id);
+        fetchModels.type = "button"; fetchModels.id = "fetch-models"; hint.setAttribute("role", "status");
+        label.append(choices, fetchModels, hint);
+        fetchModels.onclick = async () => {
+          const base = $("#setting-base_url").value.trim(), key = $("#setting-api_key").value.trim();
+          const clear = $('#settings-form input[name="clear__api_key"]')?.checked;
+          fetchModels.disabled = true; hint.textContent = "正在读取模型列表…"; choices.replaceChildren();
+          try {
+            const data = await json("/api/models", "POST", { settings: { base_url: base, api_key: key }, clear_secrets: clear ? ["api_key"] : [] });
+            if (!input.isConnected) return;
+            if (base !== $("#setting-base_url").value.trim() || key !== $("#setting-api_key").value.trim()) { hint.textContent = "连接设置已变更，请重新获取。"; return; }
+            choices.replaceChildren(...data.models.map((id) => { const option = el("option"); option.value = id; return option; }));
+            hint.textContent = "连接成功，找到 " + data.models.length + " 个模型。输入或选择模型标识后保存。";
+          } catch (error) { if (input.isConnected) hint.textContent = error.message; }
+          finally { fetchModels.disabled = false; }
+        };
+      }
       if (type === "password" && state.settings[name + "_configured"]) {
         const clear = el("label", "清除此凭据", "check secret-clear"), checkbox = el("input"); checkbox.type = "checkbox"; checkbox.name = "clear__" + name; clear.prepend(checkbox); label.append(clear);
       }
@@ -481,9 +509,10 @@ $("#settings-form").onsubmit = async (event) => {
   catch (error) { text("#settings-error", error.message); }
 };
 $("#provider-preset").onchange = (event) => {
-  const presets = { deepseek: ["https://api.deepseek.com/v1", "deepseek-chat"], openai: ["https://api.openai.com/v1", "gpt-4.1"], gateway: ["https://ai-gateway.vercel.sh/v1", "deepseek/deepseek-v4.1-flash"] };
+  const presets = { deepseek: ["https://api.deepseek.com/v1", "deepseek-flash"], openai: ["https://api.openai.com/v1", "gpt-4.1"], gateway: ["https://ai-gateway.vercel.sh/v1", "deepseek/deepseek-v4.1-flash"] };
   const values = presets[event.target.value]; if (!values) return;
   $("#setting-base_url").value = values[0]; $("#setting-model").value = values[1];
+  $("#model-options")?.replaceChildren();
 };
 $("#change-password").onclick = () => guard(async () => {
   await json("/api/password", "POST", { old_password: $("#old-password").value, new_password: $("#new-password").value });

@@ -18,5 +18,7 @@ def schema_test_validator() -> JsonValidator:
 
 
 def strict_test_validator() -> JsonValidator:
-    """Production-like validation for trace-semantic tests."""
-    return JsonValidator(ValidationSettings())
+    """Explicit strict normalization/syntax; independent of user-facing defaults."""
+    return JsonValidator(ValidationSettings(
+        normalization_mode="strict", disable_truncation_repair=True,
+    ))

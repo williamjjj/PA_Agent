@@ -25,6 +25,8 @@ uv run uvicorn app:app --host 127.0.0.1 --port 8000
 4. 检查 /api/health 返回 ok，并确认 /api/status 的 configured 为 true，再注册账户。
 5. 每个用户登录后，在「个人设置」填写自己的 Base URL、模型标识和 API Key。
 
+填写地址和 Key 后，可点击「检测连接并获取模型」，从当前服务返回的模型列表选择；这一步不会保存设置或调用付费生成接口。部分网关不提供模型列表，可手动填写供应商给出的标识再保存。支持 OpenAI 兼容 Chat Completions；DeepSeek 思考开关、推理强度及兼容网关的输出预算会按服务格式发送。
+
 | 环境变量 | 用途 |
 | --- | --- |
 | DATABASE_URL | 必填。持久 PostgreSQL 连接串，建议使用数据库供应商提供的连接池地址和 TLS 参数 |
@@ -108,6 +110,6 @@ node --test tests/web/test_stream.mjs
 uv run ruff check pa_agent/web tests/web pa_agent/bridge.py --select E9,F63,F7,F82
 ~~~
 
-测试不使用真实模型凭据。完整旧测试套件存在已在原分支复现的失败，不能将其视为全绿；详情见 [验证记录](docs/WEB_VALIDATION.md)。Web CI 严格检查新增账户/数据/流式功能与相关核心流程，并单独保留完整旧套件报告。
+测试不使用真实模型凭据。完整离线测试现为 670 项通过，另有 7 项需要外部服务的 live 测试未运行；SSE 解析测试 4 项通过。CI 对完整离线套件执行严格检查，失败即阻止通过，不再忽略旧套件失败。修复和测试样例调整的依据见 [验证记录](docs/WEB_VALIDATION.md)。
 
 线上模型、行情供应商权限和 Windows MT5 连接需要使用各自账户验证。许可证见 [LICENSE](LICENSE)。

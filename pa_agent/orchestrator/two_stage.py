@@ -200,7 +200,7 @@ def _build_empty_record(
 ) -> AnalysisRecord:
     """Build a partial AnalysisRecord with meta populated from the frame."""
     ts_ms = now_local_ms()
-    ts_iso = datetime.fromtimestamp(ts_ms / 1000).isoformat(timespec="milliseconds")
+    ts_iso = datetime.fromtimestamp(ts_ms / 1000).astimezone().isoformat(timespec="milliseconds")
 
     # Build masked provider snapshot
     ai_provider: dict[str, Any] = {}

@@ -207,6 +207,24 @@ def prompts(current=Depends(user)):
              "modified": p.name in overrides} for p in sorted(PROMPTS.glob("*.txt"))]
 
 
+@app.post("/api/models")
+def models(data: SettingsChange, current=Depends(user)):
+    from pa_agent.web.model import ProviderError, list_models
+    uid, store = current["id"], db()
+    if not store.rate_limit("models:"+uid, 20):
+        raise HTTPException(429, "模型列表请求过于频繁，请稍后重试。")
+    try:
+        cfg = merge_settings(store.settings(uid), data.settings, data.clear_secrets)
+    except ValueError:
+        raise HTTPException(422, "请检查公共 HTTPS Base URL 和 API Key 格式。") from None
+    if not cfg.api_key:
+        raise HTTPException(422, "请先填写自己的 API Key。")
+    try:
+        return {"models": list_models(cfg)}
+    except ProviderError as exc:
+        raise HTTPException(502, str(exc)) from None
+
+
 @app.get("/api/sources")
 def sources():
     return {"sources": catalog()}
