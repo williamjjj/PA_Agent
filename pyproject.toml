@@ -29,10 +29,10 @@ dependencies = [
     "akshare>=1.14,<2",
     "baostock>=0.8,<1",
     "tushare>=1.4,<2",
+    "tvdatafeed @ https://github.com/rongardF/tvdatafeed/archive/e6f6aaa7de439ac6e454d9b26d2760ded8dc4923.zip",
 ]
 
 [project.optional-dependencies]
-tradingview = ["tvdatafeed @ git+https://github.com/rongardF/tvdatafeed.git"]
 dev = ["pytest>=8", "hypothesis>=6", "ruff>=0.5"]
 
 [project.scripts]
