@@ -59,7 +59,11 @@ class YFinanceSource(DataSource):
 
     def connect(self) -> None:
         try:
-            import yfinance  # noqa: F401  — just verify it's installed
+            import yfinance
+            import os
+            import tempfile
+            if os.getenv("VERCEL"):
+                yfinance.set_tz_cache_location(tempfile.gettempdir() + "/pa-yfinance")
             self._connected = True
             logger.info("YFinanceSource connected (yfinance available)")
         except ImportError as exc:
@@ -126,13 +130,13 @@ class YFinanceSource(DataSource):
 
         # Choose period based on timeframe
         if self._timeframe in _INTRADAY_TF:
-            period = "60d"   # max for intraday
+            period = "7d" if self._timeframe == "1m" else "60d"
         else:
             period = "2y"
 
         try:
             ticker = yf.Ticker(self._symbol)
-            df = ticker.history(period=period, interval=yf_interval)
+            df = ticker.history(period=period, interval=yf_interval, timeout=20)
         except Exception as exc:
             raise DataSourceTransientError(f"yfinance fetch failed: {exc}") from exc
 

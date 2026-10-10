@@ -1,113 +1,118 @@
+"""Web adapter for the original validated two-stage analysis pipeline."""
 from __future__ import annotations
 
-import asyncio
-import time
-from pathlib import Path
+import json
+from dataclasses import asdict
 
-import ai
-from ai.models.core.params import OutputParams
-
-from pa_agent.ai.deepseek_client import AIReply, AIUsage, CancelledError
 from pa_agent.ai.json_validator import JsonValidator
 from pa_agent.ai.prompt_assembler import PromptAssembler
 from pa_agent.ai.router import route_strategy_files
-from pa_agent.config.settings import Settings
+from pa_agent.orchestrator.free_chat import FreeChatSession
 from pa_agent.orchestrator.two_stage import TwoStageOrchestrator
-
-MODEL = "deepseek/deepseek-v4.1-flash"
-ROOT = Path(__file__).resolve().parents[2]
-
-
-class GatewayClient:
-    def __init__(self):
-        self.deadline = time.monotonic() + 180
-
-    def stream_chat(self, messages, *, cancel_token, on_content_token=None, **kwargs):
-        async def generate():
-            started = time.monotonic()
-            converted = [ai.message(m["content"], role=m["role"]) for m in messages]
-            remaining = min(85, self.deadline - started)
-            if remaining <= 0:
-                raise TimeoutError("分析已超时")
-            async with asyncio.timeout(remaining):
-                async with ai.stream(
-                    ai.get_model(MODEL), converted,
-                    params=ai.InferenceRequestParams(output=OutputParams(max_tokens=8000)),
-                ) as stream:
-                    iterator = stream.__aiter__()
-                    pending = asyncio.create_task(anext(iterator))
-                    try:
-                        while True:
-                            if cancel_token.is_set():
-                                raise CancelledError("分析已取消")
-                            done, _ = await asyncio.wait({pending}, timeout=0.25)
-                            if not done:
-                                continue
-                            try:
-                                event = pending.result()
-                            except StopAsyncIteration:
-                                break
-                            if isinstance(event, ai.events.TextDelta) and on_content_token:
-                                on_content_token(event.chunk)
-                            pending = asyncio.create_task(anext(iterator))
-                    finally:
-                        if not pending.done():
-                            pending.cancel()
-                            await asyncio.gather(pending, return_exceptions=True)
-                text = stream.text
-                usage = stream.usage
-                input_tokens = getattr(usage, "input_tokens", 0) or 0
-                output_tokens = getattr(usage, "output_tokens", 0) or 0
-                return AIReply(text, "", {"content": text}, AIUsage(
-                    prompt_tokens=input_tokens, completion_tokens=output_tokens,
-                    total_tokens=input_tokens + output_tokens,
-                ), "", (time.monotonic() - started) * 1000)
-        return asyncio.run(generate())
+from pa_agent.records.schema import AnalysisRecord, ExperienceEntry
+from pa_agent.web.model import ModelClient
+from pa_agent.web.settings import PROMPTS, SECRET_FIELDS
 
 
-class ResponseOnlyWriter:
+class MemoryWriter:
     def save_partial(self, record, reason):
-        return None
+        pass
 
     def save_full(self, record):
-        return None
+        pass
 
 
-class NoExperience:
-    def read_top5(self, *args, **kwargs):
-        return []
+class AccountExperience:
+    def __init__(self, store, uid):
+        self.entries = store.list(uid, "experience", limit=500)
+
+    def read_top5(self, cycle_position):
+        matches = []
+        for row in self.entries:
+            data = row["payload"]
+            if data["cycle_position"] == cycle_position:
+                matches.append(ExperienceEntry(
+                    filename=row["id"], case_type=data["case_type"], cycle_position=cycle_position,
+                    timestamp_ms=int(row["created"]*1000), content=data["content"]))
+        return matches[:5]
+
+
+class AccountPrompts(PromptAssembler):
+    def __init__(self, settings):
+        super().__init__(PROMPTS, prompt_settings=settings.prompt)
+        self.overrides = settings.prompt_overrides
+
+    def _get_shared_system_prompt(self):
+        # The desktop cache is keyed only by directory. Never share it between tenants.
+        return self._build_shared_system_prompt_inner()
+
+    def _load(self, filename):
+        return self.overrides[filename] if filename in self.overrides else super()._load(filename)
 
 
 class WebOrchestrator(TwoStageOrchestrator):
     def _stream_chat_resilient(self, messages, *, stage_label, **kwargs):
-        # Web requests must never fall back to a local desktop connector.
         return self._client.stream_chat(messages, **kwargs)
 
 
-def analyze(frame, cancel_token, on_event, client=None):
-    settings = Settings()
-    settings.provider.model = MODEL
-    settings.provider.base_url = "https://ai-gateway.vercel.sh"
-    settings.provider.thinking = False
-    settings.general.decision_stance = "conservative"
-    settings.validation.retry_enabled = False
-    settings.validation.retry_max = 0
-    orchestrator = WebOrchestrator(
-        client or GatewayClient(),
-        PromptAssembler(ROOT / "prompt_engineering", prompt_settings=settings.prompt),
-        route_strategy_files, JsonValidator(settings.validation),
-        ResponseOnlyWriter(), NoExperience(), settings,
+def redact(value, settings):
+    text = json.dumps(value, ensure_ascii=False)
+    for field in SECRET_FIELDS:
+        secret = getattr(settings, field)
+        if secret and len(secret) >= 6:
+            text = text.replace(json.dumps(secret, ensure_ascii=False)[1:-1], "[redacted]")
+    return json.loads(text)
+
+
+def analyze(frame, settings, store, uid, cancel, emit, previous=None, new_count=None, client=None):
+    core = settings.core()
+    client = client or ModelClient(settings)
+    pipeline = WebOrchestrator(
+        client, AccountPrompts(settings), route_strategy_files, JsonValidator(core.validation),
+        MemoryWriter(), AccountExperience(store, uid), core)
+    def tokens(stage, kind):
+        return lambda text: emit({"event": "token", "stage": stage, "kind": kind, "text": text})
+    record = pipeline.submit(
+        frame, cancel, lambda ev: emit({"event": "stage", "stage": ev.name}),
+        on_stage1_content=tokens("stage1", "content"),
+        on_stage1_reasoning=tokens("stage1", "reasoning"),
+        on_stage2_content=tokens("stage2", "content"),
+        on_stage2_reasoning=tokens("stage2", "reasoning"),
+        previous_record=AnalysisRecord.model_validate(previous) if previous else None,
+        incremental_new_bar_count=new_count,
     )
-    record = orchestrator.submit(frame, cancel_token, on_event)
+    raw = record.model_dump(mode="json")
+    raw["meta"]["ai_provider"] = {"model": settings.model, "base_url": settings.base_url}
+    raw = redact(raw, settings)
+    complete = bool(record.stage1_diagnosis and record.stage2_decision and not record.exception and not cancel.is_set())
+    error = None if complete else (
+        "分析已取消，保留已完成的阶段。" if cancel.is_set() else
+        "分析未完成或未通过校验，未生成有效决策。可在记录中查看具体校验结果。")
     result = {
-        "meta": {"symbol": frame.symbol, "timeframe": frame.timeframe, "model": MODEL},
-        "stage1": record.stage1_diagnosis,
-        "stage2": record.stage2_decision,
-        "strategies": record.strategy_files_used,
-        "usage": record.usage_total,
-        "error": None,
+        "meta": {"symbol": frame.symbol, "timeframe": frame.timeframe, "model": settings.model,
+                 "incremental_bars": new_count or 0},
+        "status": "complete" if complete else "failed",
+        "stage1": raw["stage1_diagnosis"], "stage2": raw["stage2_decision"],
+        "strategies": raw["strategy_files_used"], "usage": raw["usage_total"], "error": error,
     }
-    if record.exception:
-        result["error"] = "分析未通过校验或模型服务未完成响应；请稍后重试。未生成有效交易决策。"
-        result["error_type"] = record.exception.get("type", "analysis_error")
-    return result
+    return result, raw
+
+
+def followup(payload, question, settings, cancel, emit, client=None):
+    if payload["result"]["status"] != "complete":
+        raise ValueError("请先完成有效分析，再继续追问。")
+    record = AnalysisRecord.model_validate(payload["record"])
+    messages = FreeChatSession._build_prefix(record)
+    for turn in payload.get("chat", [])[-20:]:
+        messages.extend([{"role": "user", "content": turn["question"]},
+                         {"role": "assistant", "content": turn["content"]}])
+    messages.append({"role": "user", "content": question})
+    reply = (client or ModelClient(settings)).stream_chat(
+        messages, cancel_token=cancel,
+        on_content_token=lambda text: emit({"event": "token", "stage": "chat", "kind": "content", "text": text}),
+        on_reasoning_token=lambda text: emit({"event": "token", "stage": "chat", "kind": "reasoning", "text": text}),
+    )
+    if cancel.is_set():
+        raise ValueError("追问已取消。")
+    return redact({"question": question, "content": reply.content,
+                   "reasoning": reply.reasoning_content, "usage": asdict(reply.usage)}, settings)
