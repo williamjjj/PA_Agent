@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
+import sys
 
 import pytest
 
@@ -33,7 +34,7 @@ def test_mt5_server_time_ms_prefers_time_msc() -> None:
     tick.time_msc = 1_700_000_123_456
     tick.time = 1_700_000_000
 
-    with patch("MetaTrader5.symbol_info_tick", return_value=tick):
+    with patch.dict(sys.modules, {"MetaTrader5": MagicMock(symbol_info_tick=lambda _: tick)}):
         assert src.server_time_ms() == 1_700_000_123_456
 
 
@@ -48,7 +49,7 @@ def test_mt5_server_time_ms_falls_back_to_time_seconds() -> None:
     tick.time_msc = 0
     tick.time = 1_700_000_000
 
-    with patch("MetaTrader5.symbol_info_tick", return_value=tick):
+    with patch.dict(sys.modules, {"MetaTrader5": MagicMock(symbol_info_tick=lambda _: tick)}):
         assert src.server_time_ms() == 1_700_000_000_000
 
 

@@ -36,14 +36,11 @@ def test_tv_exchange_auto_preserved():
     assert normalize_gold_tv_exchange("OANDA") == "OANDA"
 
 
-def test_tv_forex_auto_probe_tries_all_forex_presets():
+def test_tv_forex_auto_probe_excludes_stock_and_crypto_venues():
     plan = tv_forex_auto_probe_plan("XAUUSD")
     exchanges = [ex for ex, _ in plan]
-    assert exchanges == [
-        ex
-        for ex in TV_EXCHANGE_PRESETS
-        if ex and ex not in {"SSE", "SZSE", "HKEX"}
-    ]
+    assert exchanges == ["OANDA", "PEPPERSTONE", "FOREXCOM", "FX", "TVC", "CAPITALCOM"]
+    assert set(exchanges).issubset(TV_EXCHANGE_PRESETS)
     assert ("OANDA", "XAUUSD") in plan
     assert ("TVC", "GOLD") in plan
 

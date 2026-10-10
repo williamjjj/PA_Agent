@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pa_agent.ai.retry_feedback import build_retry_feedback
 from pa_agent.ai.retry_policy import detect_cheat, should_retry
 from pa_agent.ai.stage2_normalizer import ensure_stage2_predictions
-from pa_agent.gui.stage2_payload import prepare_stage2_for_ui
+from pa_agent.web.presentation.stage2_payload import prepare_stage2_for_ui
 
 
 @dataclass
