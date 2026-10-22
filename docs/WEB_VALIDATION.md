@@ -1,5 +1,31 @@
 # Web migration validation
 
+## Independent administrator and invitations — 2026-10-22
+
+Added a separate administrator account, initialized once from private deployment
+variables, plus an administrator-only invitation panel. Administrators can view,
+copy, replace, randomly regenerate, and disable the shared registration code.
+The database stores the code encrypted and serializes registration with changes;
+existing environment variables are imported once and cannot revive a revoked code.
+Ordinary accounts cannot access these endpoints, and administrators retain normal
+tenant isolation for private analysis and model credentials.
+
+Validation on the final feature tree:
+
+- Full offline Python suite: **1007 passed, 7 live deselected**. One existing
+  invalid-escape SyntaxWarning; no failures.
+- Streaming parser regression, JavaScript syntax, runtime lint, and diff checks pass.
+- Local Chromium: **15 checks passed**, no JavaScript or console errors. Covered
+  administrator login, manual change/copy, random rotation, rejected old code,
+  disabled registration, ordinary-user denial, password change, delayed responses,
+  logout and cross-tab account changes.
+- Desktop 1440×1000 and mobile 390×844 have no horizontal overflow. Administrator
+  controls are accessible from personal settings on mobile. Screenshots inspected.
+- Browser interactions used a temporary local SQLite database and test credentials.
+  These results do not claim browser interaction against deployed PostgreSQL.
+
+Deployment and bootstrap instructions: [ADMIN.md](ADMIN.md).
+
 ## Registration availability feedback — 2026-10-22
 
 The deployed Preview reported `configured: false` and `registration_open: false`;

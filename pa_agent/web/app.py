@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import os
 import queue
+import secrets
 import time
 from pathlib import Path
 from typing import Literal
@@ -21,7 +21,7 @@ from pa_agent.web.data import MAX_BODY, ImportRequest, chart_data, demo_csv, par
 from pa_agent.web.settings import PROMPTS, SECRET_FIELDS, WebSettings, merge_settings
 from pa_agent.web.sources import SourceRequest, catalog, fetch_frame, incremental_count, instrument_metadata, restore_frame
 from pa_agent.web.snapshots import same_market, save_snapshot, with_snapshot_id
-from pa_agent.web.store import ConfigurationError, get_store
+from pa_agent.web.store import ConfigurationError, RegistrationDenied, get_store
 from pa_agent.web.research_api import attach_research_routes
 from pa_agent.web.mining_api import attach_mining_routes
 
@@ -86,6 +86,13 @@ def user(request: Request):
     return current
 
 
+def administrator(current=Depends(user)):
+    # The role comes from the database on every request, never browser input.
+    if not current["is_admin"]:
+        raise HTTPException(403, "仅管理员可管理邀请码。")
+    return current
+
+
 def settings_for(uid):
     return WebSettings.model_validate(db().settings(uid))
 
@@ -98,7 +105,7 @@ def owned(uid, kind, ident):
 
 
 def registration_open():
-    return bool(os.getenv("PA_WEB_INVITE_CODE")) or os.getenv("PA_WEB_REGISTRATION", "0" if os.getenv("VERCEL") else "1") == "1"
+    return db().registration_open()
 
 
 def session_response(request, current):
@@ -150,16 +157,42 @@ def status(request: Request):
 
 @app.post("/api/register")
 def register(data: Credentials, request: Request):
-    if not registration_open():
-        raise HTTPException(403, "注册尚未开放，请联系管理员。")
     login_limit(request, data.username)
-    invite = os.getenv("PA_WEB_INVITE_CODE", "")
-    if invite and not hmac.compare_digest(invite.encode(), data.invite_code.encode()):
-        raise HTTPException(403, "邀请码不正确。")
-    current = db().register(data.username, data.password)
+    try:
+        current = db().register(data.username, data.password, data.invite_code)
+    except RegistrationDenied as exc:
+        raise HTTPException(403, str(exc)) from None
     if not current:
         raise HTTPException(409, "用户名不可用。")
     return session_response(request, current)
+
+
+class InvitePolicyChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = Field(strict=True)
+    code: str = Field(max_length=256)
+
+
+@app.get("/api/admin/invite")
+def read_invite(current=Depends(administrator)):
+    return db().invite_policy()
+
+
+@app.put("/api/admin/invite")
+def update_invite(data: InvitePolicyChange, current=Depends(administrator)):
+    if not db().rate_limit("admin-invite:" + current["id"], 30):
+        raise HTTPException(429, "邀请码修改过于频繁，请稍后重试。")
+    try:
+        return db().set_invite_policy(data.enabled, data.code)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+
+@app.post("/api/admin/invite/rotate")
+def rotate_invite(current=Depends(administrator)):
+    if not db().rate_limit("admin-invite:" + current["id"], 30):
+        raise HTTPException(429, "邀请码修改过于频繁，请稍后重试。")
+    return db().set_invite_policy(True, secrets.token_urlsafe(24))
 
 
 @app.post("/api/session")

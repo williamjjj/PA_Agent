@@ -2,7 +2,7 @@
 
 本次选择 Vercel 托管网页/API，连接持久 PostgreSQL，使用各账户自己的模型
 和行情凭据。支持登录、PA 分析、量化因子与历史回测；不部署常驻挖掘 Worker。
-网页分支已成功部署 Preview；账户服务还需完成数据库与加密配置检查。
+网页分支已成功部署 Preview，并已连接独立的试用数据库。
 部署状态 Ready 只说明发布完成，注册可用性以 `/api/status` 的结果为准。
 
 ## 1. 确认身份、项目与分支
@@ -35,8 +35,10 @@ Build Command、Output Directory 和 Install Command 覆盖项，让 Vercel 使�
 |---|---|
 | `DATABASE_URL` | 上述连接串；若 Marketplace 注入了其他变量名，明确配置为应用读取的这个名称 |
 | `PA_WEB_ENCRYPTION_KEY` | 稳定的 Fernet 密钥；已有数据库必须复用其原密钥 |
-| `PA_WEB_INVITE_CODE` | 自定的私密邀请码，启用邀请码注册 |
-| `PA_WEB_REGISTRATION` | 保持 `0` 即可使用邀请码注册；仅在明确需要公开注册时设为 `1` |
+| `PA_WEB_INVITE_CODE` | 首次初始化时导入的私密邀请码；之后在管理员页面管理 |
+| `PA_WEB_REGISTRATION` | 首次初始化时保持 `0` 即可使用邀请码注册；设为 `1` 且无邀请码时开放注册 |
+| `PA_WEB_ADMIN_USERNAME` | 首次创建独立管理员使用的用户名，例如 `pa_admin` |
+| `PA_WEB_ADMIN_PASSWORD` | 随机初始密码，12–128 字符，设置为 Sensitive |
 
 新数据库可在可信本地环境使用 `scripts/init_deploy_env.py` 生成私密
 `.env.deploy`，再通过本地编辑器取出其中的 Fernet 密钥与邀请码填入 Vercel。
@@ -55,7 +57,7 @@ Production 环境独立配置；除非有意共用正式账户数据，Preview �
 | 返回状态 | 含义与下一步 |
 |---|---|
 | `configured: false` | 账户存储服务未就绪。检查 Preview 环境是否有正确的 `DATABASE_URL` 和有效的 `PA_WEB_ENCRYPTION_KEY`，以及数据库能否连接；单独开放注册不会修复存储配置 |
-| `configured: true, registration_open: false` | 存储配置检查已通过，但站点未开放注册。设置 `PA_WEB_INVITE_CODE` 使用邀请码注册，或按需设 `PA_WEB_REGISTRATION=1` 开放注册 |
+| `configured: true, registration_open: false` | 存储配置检查已通过，但站点未开放注册。请用管理员账户登录，在「邀请码管理」启用注册；已有数据库不再读取环境变量来覆盖此策略 |
 | 两项均为 `true` | 注册已开放，可以选择注册并提交账户信息；如使用邀请码，需输入正确邀请码 |
 
 不确定是否连接数据库时，先在项目 **Settings → Environment Variables** 中
@@ -69,6 +71,9 @@ Marketplace 连接 PostgreSQL 并选择当前提供的免费计划。
 URL 可能仍使用旧环境变量，刷新旧地址不会把新配置应用到旧部署。
 
 ## 3. 部署与检查
+
+独立管理员的首次初始化与邀请码管理见 [管理员指南](ADMIN.md)。管理员直接
+登录，无需先注册或填写邀请码；登录后在个人设置更改初始密码。
 
 从目标网页分支的实际部署记录打开 Preview URL。当前配置请求最长 240 秒的
 函数执行时间；在项目设置及构建日志中确认当前运行模式允许该配置。部署失败

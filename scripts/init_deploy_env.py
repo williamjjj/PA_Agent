@@ -23,6 +23,8 @@ def main() -> int:
         "POSTGRES_PASSWORD=" + secrets.token_urlsafe(36) + "\n"
         "PA_WEB_ENCRYPTION_KEY=" + base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii") + "\n"
         "PA_WEB_INVITE_CODE=" + secrets.token_urlsafe(24) + "\n"
+        "PA_WEB_ADMIN_USERNAME=pa_admin\n"
+        "PA_WEB_ADMIN_PASSWORD=" + secrets.token_urlsafe(24) + "\n"
         "PA_WEB_PORT=8000\n"
         "PA_WEB_IMAGE=pa-agent:local\n"
         "# Set to the actual reverse-proxy source address before enabling public HTTPS.\n"

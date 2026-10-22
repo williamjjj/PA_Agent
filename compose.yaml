@@ -20,6 +20,8 @@ x-app: &app
     PA_WEB_ENCRYPTION_KEY: ${PA_WEB_ENCRYPTION_KEY:?A stable Fernet key is required}
     PA_WEB_INVITE_CODE: ${PA_WEB_INVITE_CODE:?An invitation code is required}
     PA_WEB_REGISTRATION: "0"
+    PA_WEB_ADMIN_USERNAME: ${PA_WEB_ADMIN_USERNAME:-}
+    PA_WEB_ADMIN_PASSWORD: ${PA_WEB_ADMIN_PASSWORD:-}
     PA_WEB_DATA_DIR: /tmp/pa-agent
   depends_on:
     postgres:

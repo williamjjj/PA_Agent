@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
+import re
 import secrets
 import time
 import uuid
@@ -15,7 +17,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerificationError
 from cryptography.fernet import Fernet
 from sqlalchemy import (
-    JSON, Column, Float, Index, Integer, MetaData, String, Table, Text,
+    JSON, Boolean, Column, Float, ForeignKey, Index, Integer, MetaData, String, Table, Text,
     create_engine, delete, event, insert, select, update,
 )
 from sqlalchemy.exc import IntegrityError
@@ -30,6 +32,18 @@ users = Table("web_users", metadata,
     Column("created", Float, nullable=False),
     Column("busy_until", Float, nullable=False, default=0),
     Column("lease", String(64), nullable=False, default=""),
+)
+admins = Table("web_admins", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("user_id", String(36), ForeignKey("web_users.id"), unique=True, nullable=False),
+)
+registration_policy = Table("web_registration_policy", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("enabled", Boolean, nullable=False),
+    Column("code", Text, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    # A permanent marker: revoking the role must not recreate it on restart.
+    Column("admin_initialized", Boolean, nullable=False, default=False),
 )
 sessions = Table("web_sessions", metadata,
     Column("token", String(64), primary_key=True),
@@ -58,6 +72,10 @@ class ConfigurationError(RuntimeError):
     pass
 
 
+class RegistrationDenied(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class AuthenticatedUser:
     """A verified credential generation, kept private until session issuance.
@@ -70,9 +88,10 @@ class AuthenticatedUser:
     id: str
     username: str
     password_hash: str = field(repr=False)
+    is_admin: bool = False
 
     def public(self):
-        return {"id": self.id, "username": self.username}
+        return {"id": self.id, "username": self.username, "is_admin": self.is_admin}
 
 
 class Store:
@@ -97,11 +116,85 @@ class Store:
             if self.engine.dialect.name == "postgresql":
                 from sqlalchemy import text
                 conn.execute(text("SELECT pg_advisory_xact_lock(731940122)"))
+            else:
+                # SQLite's deferred transactions do not lock schema inspection.
+                # Serialize cold starts before create_all and bootstrap reads.
+                conn.exec_driver_sql("BEGIN IMMEDIATE")
             metadata.create_all(conn)
             from pa_agent.web.research_store import create_tables
             create_tables(conn)
             from pa_agent.web.mining_store import create_tables as create_mining_tables
             create_mining_tables(conn)
+            self._initialize_accounts(conn)
+
+    def _initialize_accounts(self, conn):
+        policy = conn.execute(select(registration_policy).where(
+            registration_policy.c.id == 1)).mappings().first()
+        if policy is None:
+            code = os.getenv("PA_WEB_INVITE_CODE", "")
+            enabled = bool(code) or os.getenv(
+                "PA_WEB_REGISTRATION", "0" if os.getenv("VERCEL") else "1") == "1"
+            conn.execute(insert(registration_policy).values(
+                id=1, enabled=enabled, code=self.seal(code), updated_at=time.time(),
+                admin_initialized=False))
+        elif policy["admin_initialized"]:
+            return
+
+        username = os.getenv("PA_WEB_ADMIN_USERNAME", "")
+        password = os.getenv("PA_WEB_ADMIN_PASSWORD", "")
+        if not username and not password:
+            return
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{3,40}", username) or not 12 <= len(password) <= 128:
+            raise ConfigurationError("请同时配置有效的管理员用户名和 12–128 字符的初始密码。")
+        username = username.casefold()
+        if conn.execute(select(users.c.id).where(users.c.username == username)).first():
+            raise ConfigurationError("管理员用户名已被使用，请为独立管理员配置其他用户名。")
+        uid = str(uuid.uuid4())
+        conn.execute(insert(users).values(
+            id=uid, username=username, password=hasher.hash(password),
+            settings=self.seal({}), created=time.time(), busy_until=0, lease=""))
+        conn.execute(insert(admins).values(id=1, user_id=uid))
+        conn.execute(update(registration_policy).where(registration_policy.c.id == 1)
+                     .values(admin_initialized=True))
+
+    @staticmethod
+    def _admin_expression():
+        return select(admins.c.user_id).where(admins.c.user_id == users.c.id).exists().label("is_admin")
+
+    @staticmethod
+    def _lock_registration(conn):
+        # A write lock works on both PostgreSQL and SQLite. Registration and
+        # rotation/revocation hold it until their whole transaction commits.
+        conn.execute(update(registration_policy).where(registration_policy.c.id == 1)
+                     .values(updated_at=registration_policy.c.updated_at))
+        return conn.execute(select(registration_policy).where(
+            registration_policy.c.id == 1)).mappings().one()
+
+    def is_admin(self, uid):
+        with self.engine.connect() as conn:
+            return conn.execute(select(admins.c.user_id).where(admins.c.user_id == uid)).first() is not None
+
+    def registration_open(self):
+        with self.engine.connect() as conn:
+            return bool(conn.execute(select(registration_policy.c.enabled).where(
+                registration_policy.c.id == 1)).scalar_one())
+
+    def invite_policy(self):
+        with self.engine.connect() as conn:
+            policy = conn.execute(select(registration_policy).where(
+                registration_policy.c.id == 1)).mappings().one()
+        return {"enabled": bool(policy["enabled"]), "code": self.unseal(policy["code"]),
+                "updated_at": policy["updated_at"]}
+
+    def set_invite_policy(self, enabled, code):
+        if not isinstance(code, str) or len(code) > 256 or (enabled and len(code) < 12):
+            raise ValueError("启用注册时，邀请码须为 12–256 个字符。")
+        with self.engine.begin() as conn:
+            self._lock_registration(conn)
+            now = time.time()
+            conn.execute(update(registration_policy).where(registration_policy.c.id == 1).values(
+                enabled=enabled, code=self.seal(code), updated_at=now))
+        return {"enabled": bool(enabled), "code": code, "updated_at": now}
 
     def seal(self, data):
         return self.cipher.encrypt(json.dumps(data, ensure_ascii=False).encode()).decode()
@@ -109,11 +202,17 @@ class Store:
     def unseal(self, data):
         return json.loads(self.cipher.decrypt(data.encode()))
 
-    def register(self, username, password):
+    def register(self, username, password, invite_code=""):
         uid = str(uuid.uuid4())
         password_hash = hasher.hash(password)
         try:
             with self.engine.begin() as conn:
+                policy = self._lock_registration(conn)
+                if not policy["enabled"]:
+                    raise RegistrationDenied("注册尚未开放，请联系管理员。")
+                code = self.unseal(policy["code"])
+                if code and not hmac.compare_digest(code.encode(), invite_code.encode()):
+                    raise RegistrationDenied("邀请码不正确。")
                 conn.execute(insert(users).values(
                     id=uid, username=username.casefold(), password=password_hash,
                     settings=self.seal({}), created=time.time(), busy_until=0, lease=""))
@@ -123,12 +222,13 @@ class Store:
 
     def login(self, username, password):
         with self.engine.connect() as conn:
-            user = conn.execute(select(users).where(users.c.username == username.casefold())).mappings().first()
+            user = conn.execute(select(users, self._admin_expression()).where(
+                users.c.username == username.casefold())).mappings().first()
         try:
             hasher.verify(user["password"] if user else DUMMY_HASH, password)
         except VerificationError:
             return None
-        return AuthenticatedUser(user["id"], user["username"], user["password"]) if user else None
+        return AuthenticatedUser(user["id"], user["username"], user["password"], user["is_admin"]) if user else None
 
     def create_session(self, current: AuthenticatedUser):
         token = secrets.token_urlsafe(32)
@@ -151,7 +251,7 @@ class Store:
         if not token or len(token) > 100:
             return None
         with self.engine.connect() as conn:
-            row = conn.execute(select(users.c.id, users.c.username).join(
+            row = conn.execute(select(users.c.id, users.c.username, self._admin_expression()).join(
                 sessions, sessions.c.user_id == users.c.id).where(
                 sessions.c.token == hashlib.sha256(token.encode()).hexdigest(),
                 sessions.c.expires > time.time())).mappings().first()
@@ -177,7 +277,7 @@ class Store:
             if not changed.rowcount:
                 return None
             conn.execute(delete(sessions).where(sessions.c.user_id == uid))
-        return AuthenticatedUser(uid, row["username"], password_hash)
+        return AuthenticatedUser(uid, row["username"], password_hash, self.is_admin(uid))
 
     def settings(self, uid):
         with self.engine.connect() as conn:

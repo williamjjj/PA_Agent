@@ -1,6 +1,7 @@
 import { consumeSSE } from "/stream.mjs";
 import { initResearch } from "/research.mjs";
 import { initMining } from "/mining.mjs";
+import { initAdmin } from "/admin.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
@@ -107,6 +108,7 @@ function forgetAccount() {
 function clearPrivateViews() {
   research.reset();
   mining.reset();
+  admin.reset();
   state.controller?.abort(); state.controller = null; setBusy(false); stopTracking();
   state.settings = null; state.prompts = [];
   $$("dialog").forEach((dialog) => { if (dialog.id !== "account-dialog" && dialog.open) dialog.close(); });
@@ -521,7 +523,8 @@ async function refreshStatus() {
   if ((state.user?.id || null) !== (data.user?.id || null)) { state.epoch++; clearPrivateViews(); }
   state.user = data.user;
   text("#account-name", state.user?.username || "访客模式"); text("#avatar", state.user?.username.slice(0, 1).toUpperCase() || "访");
-  text("#account-note", state.user ? "个人账户 · 数据独立" : "登录后使用个人模型");
+  text("#account-note", state.user?.is_admin ? "管理员 · 邀请码管理" : state.user ? "个人账户 · 数据独立" : "登录后使用个人模型");
+  admin.syncUser();
   $("#logout-button").classList.toggle("hidden", !state.user);
   $("#config-notice").classList.toggle("hidden", data.configured);
   text("#config-notice", data.message || "");
@@ -689,6 +692,9 @@ const research = initResearch({ $, $$, el, json, requireUser, toast, download,
 const mining = initMining({ $, $$, el, json, requireUser, toast, download,
   getEpoch: () => state.epoch, getUser: () => state.user,
   openResearch: async () => { mining.close(); await research.open(); } });
+const admin = initAdmin({ $, $$, json, openDialog, openSettings, toast,
+  getEpoch: () => state.epoch, getUser: () => state.user,
+  onChange: (data) => showAccountAvailability({ configured: true, registration_open: data.enabled }) });
 
 $$("[data-close]").forEach((button) => button.onclick = () => button.closest("dialog").close());
 $$("[data-tab]").forEach((button) => button.onclick = () => activateTab(button.dataset.tab));
@@ -718,7 +724,7 @@ $("#account-form").onsubmit = async (event) => {
   finally { delete event.target.dataset.submitting; button.disabled = state.accountReady === false; }
 };
 $("#logout-button").onclick = () => guard(async () => {
-  state.epoch++; state.controller?.abort(); state.controller = null; setBusy(false); stopTracking();
+  state.epoch++; admin.reset(); state.controller?.abort(); state.controller = null; setBusy(false); stopTracking();
   await json("/api/logout", "POST", {}); forgetAccount(); accountChannel?.postMessage("changed");
   await refreshStatus(); renderChart(await json("/api/demo")); toast("已退出登录。");
 });

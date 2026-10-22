@@ -20,6 +20,8 @@ def clients(tmp_path, monkeypatch):
     monkeypatch.delenv("VERCEL", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("PA_WEB_INVITE_CODE", raising=False)
+    monkeypatch.delenv("PA_WEB_ADMIN_USERNAME", raising=False)
+    monkeypatch.delenv("PA_WEB_ADMIN_PASSWORD", raising=False)
     monkeypatch.setenv("PA_WEB_REGISTRATION", "1")
     monkeypatch.setenv("PA_WEB_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("PA_WEB_ENCRYPTION_KEY", Fernet.generate_key().decode())
@@ -131,11 +133,11 @@ def test_csrf_and_validation_do_not_echo_secrets(clients):
     assert TestClient(app).post("/api/logout").status_code == 403
 
 
-def test_invite_and_case_normalization(clients, monkeypatch):
+def test_invite_and_case_normalization(clients):
     a, _ = clients
     client = TestClient(app, headers=HEADERS)
     assert client.post("/api/session", json={"username": "ALICE", "password": PASSWORD}).status_code == 200
-    monkeypatch.setenv("PA_WEB_INVITE_CODE", "invitation-test")
+    get_store().set_invite_policy(True, "invitation-test")
     assert client.post("/api/register", json={"username": "charlie", "password": PASSWORD}).status_code == 403
     assert client.post("/api/register", json={"username": "charlie", "password": PASSWORD, "invite_code": "invitation-test"}).status_code == 200
 

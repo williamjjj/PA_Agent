@@ -19,16 +19,19 @@ HEADERS = {"x-pa-request": "1"}
 
 @pytest.fixture
 def account(tmp_path, monkeypatch):
-    store = Store("sqlite:///" + str(tmp_path / "accounts.sqlite3"), Fernet.generate_key().decode())
-    monkeypatch.setattr("pa_agent.web.app.db", lambda: store)
     monkeypatch.delenv("VERCEL", raising=False)
     monkeypatch.delenv("PA_WEB_INVITE_CODE", raising=False)
+    monkeypatch.delenv("PA_WEB_ADMIN_USERNAME", raising=False)
+    monkeypatch.delenv("PA_WEB_ADMIN_PASSWORD", raising=False)
     monkeypatch.setenv("PA_WEB_REGISTRATION", "1")
+    store = Store("sqlite:///" + str(tmp_path / "accounts.sqlite3"), Fernet.generate_key().decode())
+    monkeypatch.setattr("pa_agent.web.app.db", lambda: store)
     with TestClient(app, headers=HEADERS) as owner:
         result = owner.post("/api/register", json={"username": "alice", "password": PASSWORD})
         assert result.status_code == 200
         public = result.json()["user"]
-        assert set(public) == {"id", "username"}
+        assert set(public) == {"id", "username", "is_admin"}
+        assert public["is_admin"] is False
         owner.headers["x-pa-user"] = public["id"]
         yield store, owner, public["id"]
     store.engine.dispose()
@@ -53,7 +56,7 @@ def test_password_change_rejects_login_already_verified_with_old_password(accoun
             assert verified.wait(10), "login did not reach successful password verification"
             changed = owner.post("/api/password", json={"old_password": PASSWORD, "new_password": NEW_PASSWORD})
             assert changed.status_code == 200
-            assert changed.json() == {"user": {"id": uid, "username": "alice"}}
+            assert changed.json() == {"user": {"id": uid, "username": "alice", "is_admin": False}}
             assert store.user_for_session(old_cookie) is None
         finally:
             continue_login.set()
@@ -95,7 +98,7 @@ def test_password_change_revokes_session_issued_while_change_waits(account):
     assert store.user_for_session(token) is None
     assert store.create_session(verified) is None
     fresh = store.create_session(changed)
-    assert store.user_for_session(fresh) == {"id": uid, "username": "alice"}
+    assert store.user_for_session(fresh) == {"id": uid, "username": "alice", "is_admin": False}
 
 
 def test_two_password_changes_cannot_both_use_same_old_password(account, monkeypatch):

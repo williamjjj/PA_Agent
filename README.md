@@ -37,8 +37,10 @@ uv run uvicorn app:app --host 127.0.0.1 --port 8000
 | --- | --- |
 | DATABASE_URL | 必填。持久 PostgreSQL 连接串，建议使用数据库供应商提供的连接池地址和 TLS 参数 |
 | PA_WEB_ENCRYPTION_KEY | 必填。Fernet 密钥，所有账户的模型/数据源/通知凭据在数据库内加密保存 |
-| PA_WEB_INVITE_CODE | 推荐。设置后使用邀请码注册 |
-| PA_WEB_REGISTRATION | 设为 1 可开放注册；Vercel 默认关闭注册。设置邀请码也会启用注册 |
+| PA_WEB_INVITE_CODE | 首次初始化时导入的邀请码；之后由管理员在网页管理 |
+| PA_WEB_REGISTRATION | 首次初始化时设为 1 可开放注册；Vercel 默认关闭。已有数据库策略不会被环境变量覆盖 |
+| PA_WEB_ADMIN_USERNAME | 首次创建独立管理员的用户名；不会提升已有普通账户 |
+| PA_WEB_ADMIN_PASSWORD | 初始管理员密码，12–128 字符；创建成功后不会在重启时重置密码 |
 | PA_WEB_DATA_DIR | 仅本地使用的 SQLite 数据目录 |
 
 生成加密密钥（不要提交到 Git）：
@@ -47,7 +49,11 @@ uv run uvicorn app:app --host 127.0.0.1 --port 8000
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ~~~
 
-必须保留同一加密密钥。直接更换会使已保存凭据无法解密。数据库账户需能创建 web_users、web_sessions、web_items、web_limits、web_research_datasets、web_research_runs、web_mining_jobs、web_mining_workers 表；首次连接自动创建。新增研究和任务表不会清空已有账户。现阶段不提供忘记密码邮件流程；已登录用户可修改密码并注销其他会话。
+必须保留同一加密密钥。直接更换会使已保存凭据无法解密。数据库账户需能创建 web_users、web_admins、web_registration_policy、web_sessions、web_items、web_limits、web_research_datasets、web_research_runs、web_mining_jobs、web_mining_workers 表；首次连接自动创建。新增表不会清空已有账户。现阶段不提供忘记密码邮件流程；已登录用户可修改密码并注销其他会话。
+
+管理员使用独立账号登录，在「邀请码管理」查看、复制、修改、生成邀请码或停用注册。
+普通用户无法访问管理接口；管理员也不能读取其他用户的私有数据。
+首次设置、已有数据库升级与邀请码发放说明见 [管理员指南](docs/ADMIN.md)。
 
 旧 PA_WEB_ACCESS_SECRET 共用口令和平台共用模型配置已停用。网页不会读取其他账户或环境变量中的模型 API Key。没有数据库配置时，首页、示例图表和 CSV 导入仍可打开，但账号功能返回配置错误；Vercel 不会自动退回临时 SQLite。
 

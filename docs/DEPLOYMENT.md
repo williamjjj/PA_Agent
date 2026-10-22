@@ -37,7 +37,9 @@ docker compose --env-file .env.deploy ps
 |---|---|
 | `POSTGRES_PASSWORD` | PostgreSQL 密码；Web 与 Worker 使用相同值连接数据库 |
 | `PA_WEB_ENCRYPTION_KEY` | 加密用户保存的模型、数据源和通知凭据；必须长期保留 |
-| `PA_WEB_INVITE_CODE` | 注册邀请码，首次创建账户时需要 |
+| `PA_WEB_INVITE_CODE` | 首次初始化时导入数据库的注册邀请码 |
+| `PA_WEB_ADMIN_USERNAME` | 独立管理员用户名，新生成配置默认为 `pa_admin` |
+| `PA_WEB_ADMIN_PASSWORD` | 随机生成的初始管理员密码，首次创建后不再重置密码 |
 | `PA_WEB_IMAGE` | 应用镜像名称，默认 `pa-agent:local` |
 | `PA_WEB_PORT` | 宿主机 Web 端口，默认 `8000` |
 | `PA_WEB_TRUSTED_PROXIES` | 允许传递代理头的来源 IP，默认 `127.0.0.1` |
