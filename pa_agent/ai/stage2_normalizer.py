@@ -1239,7 +1239,7 @@ def _normalize_next_bar_prediction(prediction: dict[str, Any]) -> None:
         if len(tied_winners) > 1:
             # Tie: preserve model's choice if it's one of the winners
             if model_direction in tied_winners:
-                pass  # keep model's semantic choice
+                prediction["direction"] = model_direction
             else:
                 # Model direction not in tied set — override with first winner
                 logger.warning(
@@ -1256,8 +1256,8 @@ def _normalize_next_bar_prediction(prediction: dict[str, Any]) -> None:
                     "next_bar_prediction direction %r -> %r (argmax of %s)",
                     model_direction, expected, normalized,
                 )
-                prediction["direction"] = expected
-            # else: model direction matches argmax, no change needed
+            # Canonicalize casing/whitespace even when the semantic choice matches.
+            prediction["direction"] = expected
     # else: unparseable probabilities with unpredictable=False — leave for validator
 
     # 6. Strip extra keys not allowed by the schema (additionalProperties: false).

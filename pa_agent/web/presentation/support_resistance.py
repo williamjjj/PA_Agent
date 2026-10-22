@@ -6,6 +6,8 @@ import statistics
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from pa_agent.util.price_precision import price_text, round_price
+
 
 @dataclass(frozen=True)
 class StructureLevel:
@@ -22,10 +24,12 @@ class StructureLevel:
 
     @property
     def is_zone(self) -> bool:
-        return abs(self.high - self.low) > 1e-9
+        scale = max(abs(self.high), abs(self.low))
+        tolerance = 1e-9 if scale >= 1 else scale * 1e-12
+        return abs(self.high - self.low) > tolerance
 
 
-_NUMBER = r"\d+(?:\.\d+)?"
+_NUMBER = r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
 _RANGE_RE = re.compile(rf"({_NUMBER})\s*[-~－—到至]\s*({_NUMBER})")
 _SINGLE_RE = re.compile(_NUMBER)
 _TEXT_SPLIT_RE = re.compile(r"[。；;，,\n]")
@@ -359,7 +363,7 @@ def _dedupe(levels: list[StructureLevel], *, max_levels_per_kind: int) -> list[S
     for level in levels:
         if level.kind not in counts or counts[level.kind] >= max_levels_per_kind:
             continue
-        key = (level.kind, round(level.low, 6), round(level.high, 6))
+        key = (level.kind, round_price(level.low), round_price(level.high))
         if key in seen:
             continue
         seen.add(key)
@@ -370,5 +374,4 @@ def _dedupe(levels: list[StructureLevel], *, max_levels_per_kind: int) -> list[S
 
 
 def _fmt(value: float) -> str:
-    text = f"{value:.6f}".rstrip("0").rstrip(".")
-    return "0" if text in ("", "-0") else text
+    return price_text(value)

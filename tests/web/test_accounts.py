@@ -63,12 +63,12 @@ def test_model_discovery_uses_only_current_accounts_key_and_never_saves_probe(cl
             {"id": "model-a", "object": "model", "created": 1, "owned_by": "test"}]})
     with patch("pa_agent.web.model.PublicTransport", side_effect=lambda **kw: httpx.MockTransport(handle)):
         for client in (a, b):
-            response = client.post("/api/models", json={"settings": {"base_url": "https://models.example/v1"}})
+            response = client.post("/api/models", json={"settings": {"base_url": "https://api.deepseek.com/v2"}})
             assert response.status_code == 200, response.text
             assert response.json() == {"models": ["model-a", "model-b"]}
         assert a.post("/api/models", json={"settings": {}, "clear_secrets": ["api_key"]}).status_code == 422
     assert [key for key, _ in seen] == ["Bearer alice-test-key", "Bearer bob-test-key"]
-    assert all(url == "https://models.example/v1/models" for _, url in seen)
+    assert all(url == "https://api.deepseek.com/v2/models" for _, url in seen)
     assert a.get("/api/settings").json()["base_url"] == "https://api.deepseek.com/v1"
     assert a.get("/api/settings").json()["api_key_configured"]
     assert TestClient(app, headers=HEADERS).post("/api/models", json={"settings": {}}).status_code == 401

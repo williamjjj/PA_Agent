@@ -16,10 +16,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from pa_agent.util.threading import CancelToken
+from pa_agent.web.birdeye import BirdeyeError
 from pa_agent.web.data import MAX_BODY, ImportRequest, chart_data, demo_csv, parse_csv
-from pa_agent.web.settings import PROMPTS, WebSettings, merge_settings
-from pa_agent.web.sources import SourceRequest, catalog, fetch_frame, incremental_count, restore_frame
+from pa_agent.web.settings import PROMPTS, SECRET_FIELDS, WebSettings, merge_settings
+from pa_agent.web.sources import SourceRequest, catalog, fetch_frame, incremental_count, instrument_metadata, restore_frame
+from pa_agent.web.snapshots import same_market, save_snapshot, with_snapshot_id
 from pa_agent.web.store import ConfigurationError, get_store
+from pa_agent.web.research_api import attach_research_routes
+from pa_agent.web.mining_api import attach_mining_routes
 
 ROOT = Path(__file__).resolve().parents[2]
 COOKIE = "pa_session"
@@ -34,10 +38,12 @@ async def security(request: Request, call_next):
         if request.headers.get("x-pa-request") != "1" or (origin and origin != expected):
             return JSONResponse({"detail": "请求来源无效，请刷新页面重试。"}, status_code=403)
         body = bytearray()
+        body_limit = 2_500_000 if request.method == "POST" and request.url.path == "/api/research/datasets" else MAX_BODY
         async for chunk in request.stream():
             body.extend(chunk)
-            if len(body) > MAX_BODY:
-                return JSONResponse({"detail": "请求超过 600 KB 上限。"}, status_code=413)
+            if len(body) > body_limit:
+                message = "研究上传请求超过 2.5 MB 上限。" if body_limit > MAX_BODY else "请求超过 600 KB 上限。"
+                return JSONResponse({"detail": message}, status_code=413)
         request._body = bytes(body)
     response = await call_next(request)
     response.headers.update({
@@ -72,6 +78,11 @@ def user(request: Request):
     current = db().user_for_session(request.cookies.get(COOKIE, ""))
     if not current:
         raise HTTPException(401, "请先登录自己的账户。")
+    # Cookies are shared across tabs. Bind browser actions to the account that
+    # rendered the page; this header is never a substitute for authentication.
+    expected = request.headers.get("x-pa-user")
+    if expected is not None and expected != current["id"]:
+        raise HTTPException(409, {"code": "account_changed", "message": "账户已在其他页面切换，请刷新后重试。"})
     return current
 
 
@@ -91,8 +102,11 @@ def registration_open():
 
 
 def session_response(request, current):
-    response = JSONResponse({"user": current})
-    response.set_cookie(COOKIE, db().create_session(current["id"]), max_age=28800,
+    token = db().create_session(current)
+    if not token:
+        raise HTTPException(401, "登录凭据已变更，请使用最新密码重新登录。")
+    response = JSONResponse({"user": current.public()})
+    response.set_cookie(COOKIE, token, max_age=28800,
                         httponly=True, secure=bool(os.getenv("VERCEL")) or request.url.scheme == "https",
                         samesite="lax", path="/")
     return response
@@ -159,6 +173,8 @@ def login(data: Credentials, request: Request):
 
 @app.post("/api/logout")
 def logout(request: Request):
+    if request.headers.get("x-pa-user") is not None:
+        user(request)
     db().logout(request.cookies.get(COOKIE, ""))
     response = JSONResponse({"ok": True})
     response.delete_cookie(COOKIE, path="/")
@@ -174,9 +190,10 @@ class PasswordChange(BaseModel):
 def password(data: PasswordChange, request: Request, current=Depends(user)):
     if not db().rate_limit("password:"+current["id"], 10):
         raise HTTPException(429, "修改密码过于频繁，请稍后重试。")
-    if not db().change_password(current["id"], data.old_password, data.new_password):
+    authenticated = db().change_password(current["id"], data.old_password, data.new_password)
+    if not authenticated:
         raise HTTPException(401, "原密码不正确。")
-    return session_response(request, current)
+    return session_response(request, authenticated)
 
 
 @app.get("/api/settings")
@@ -187,7 +204,7 @@ def read_settings(current=Depends(user)):
 class SettingsChange(BaseModel):
     model_config = ConfigDict(extra="forbid")
     settings: dict
-    clear_secrets: list[str] = Field(default_factory=list, max_length=6)
+    clear_secrets: list[str] = Field(default_factory=list, max_length=len(SECRET_FIELDS))
 
 
 @app.put("/api/settings")
@@ -249,11 +266,42 @@ def import_csv(data: ImportRequest):
     return {**chart_data(checked_frame(data)), "source": data.source}
 
 
+class SnapshotRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    data: ImportRequest
+
+
+@app.post("/api/snapshots")
+def snapshot(data: SnapshotRequest, current=Depends(user)):
+    uid, store = current["id"], db()
+    if not store.rate_limit("snapshot:"+uid, 60):
+        raise HTTPException(429, "快照保存过于频繁，请稍后重试。")
+    frame = checked_frame(data.data)
+    chart = {**chart_data(frame), "source": data.data.source,
+             "captured_at": frame.snapshot_ts_local_ms}
+    return save_snapshot(store, uid, chart)
+
+
+class QuantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    snapshot_id: str = Field(min_length=1, max_length=36)
+
+
+@app.post("/api/quant/signals")
+def quant_signals(data: QuantRequest, current=Depends(user)):
+    uid, store = current["id"], db()
+    if not store.rate_limit("quant:"+uid, 120):
+        raise HTTPException(429, "因子请求过于频繁，请稍后重试。")
+    chart = owned(uid, "snapshot", data.snapshot_id)["payload"]
+    return with_snapshot_id(chart, data.snapshot_id)["quant_evidence"]
+
+
 @app.post("/api/market")
 def market(data: SourceRequest, current=Depends(user)):
     store, uid = db(), current["id"]
     if not store.rate_limit("market:"+uid, 60):
         raise HTTPException(429, "数据请求过于频繁，请稍后重试。")
+    cfg = settings_for(uid)
     try:
         if data.source == "mt5":
             rows = store.list(uid, "bridge", limit=1)
@@ -264,16 +312,21 @@ def market(data: SourceRequest, current=Depends(user)):
                 raise HTTPException(422, "MT5 桥接品种、周期或 K 线数量与当前选择不一致。")
             frame = restore_frame({**bridge, "bars": bridge["bars"][-data.count:]})
         else:
-            frame = fetch_frame(data, settings_for(uid))
+            frame = fetch_frame(data, cfg)
     except HTTPException:
         raise
+    except BirdeyeError as exc:
+        # The adapter emits only fixed, credential-free user-facing messages.
+        raise HTTPException(422, str(exc)) from None
     except (ValueError, ImportError):
         raise HTTPException(422, "数据不可用，请检查数据源、品种、周期及个人凭据。") from None
     except Exception:
         raise HTTPException(502, "数据源暂时不可用或无权访问该行情，请稍后重试。") from None
-    chart = {**chart_data(frame), "source": data.source, "request": data.model_dump()}
-    ident = store.put(uid, "snapshot", chart, ttl=3600)
-    return {**chart, "snapshot_id": ident}
+    chart = {**chart_data(frame), "source": data.source, "request": data.model_dump(),
+             "instrument": instrument_metadata(data), "captured_at": frame.snapshot_ts_local_ms}
+    if data.source in ("eastmoney", "akshare", "tushare"):
+        chart["adjustment"] = cfg.kline_adjust
+    return save_snapshot(store, uid, chart)
 
 
 
@@ -353,24 +406,26 @@ def run_analysis(data: AnalysisRequest, request: Request, current=Depends(user))
     if bool(data.snapshot_id) == bool(data.data):
         raise HTTPException(422, "请选择一份行情快照或导入 CSV。")
     if data.snapshot_id:
-        chart = owned(uid, "snapshot", data.snapshot_id)["payload"]
+        chart = with_snapshot_id(owned(uid, "snapshot", data.snapshot_id)["payload"], data.snapshot_id)
         frame = restore_frame(chart)
     else:
         frame = checked_frame(data.data)
-        chart = {**chart_data(frame), "source": data.data.source}
+        chart = save_snapshot(store, uid, {**chart_data(frame), "source": data.data.source,
+                                          "captured_at": frame.snapshot_ts_local_ms})
     previous, count = None, None
     if data.previous_id:
         saved = owned(uid, "record", data.previous_id)["payload"]
         old_chart = saved["chart"]
-        same_market = (old_chart["source"] == chart["source"] and
-                       old_chart.get("request", {}).get("exchange") == chart.get("request", {}).get("exchange"))
-        if same_market and saved["result"]["status"] == "complete":
+        if same_market(old_chart, chart) and saved["result"]["status"] == "complete":
             count = incremental_count(frame, old_chart, cfg.incremental_max_new_bars)
             previous = saved["record"] if count else None
     def action(cancel, emit):
         from pa_agent.web.analysis import analyze
         result, raw = analyze(frame, cfg, store, uid, cancel, emit, previous, count)
         result["meta"]["source"] = chart["source"]
+        result["meta"].update(snapshot_id=chart["snapshot_id"], dataset_hash=chart["dataset_hash"],
+                              instrument=chart["instrument"])
+        result["quant_evidence"] = chart["quant_evidence"]
         payload = {"result": result, "record": raw, "chart": chart, "chat": []}
         ident = store.put(uid, "record", payload)
         emit({"event": "result", "data": {**result, "id": ident}})
@@ -468,4 +523,6 @@ def delete_experience(ident: str, current=Depends(user)):
 
 
 # Vercel serves public assets directly at /. This mount provides identical local URLs.
+attach_research_routes(app, user, db, settings_for, owned)
+attach_mining_routes(app, user, db)
 app.mount("/", StaticFiles(directory=ROOT / "public"), name="public")

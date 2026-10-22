@@ -7,6 +7,7 @@ import os
 import secrets
 import time
 import uuid
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -57,6 +58,23 @@ class ConfigurationError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class AuthenticatedUser:
+    """A verified credential generation, kept private until session issuance.
+
+    Argon2 uses a fresh salt for each password change, so the stored hash also
+    identifies the exact generation that was verified. Never return this object
+    or its password hash from an API response.
+    """
+
+    id: str
+    username: str
+    password_hash: str = field(repr=False)
+
+    def public(self):
+        return {"id": self.id, "username": self.username}
+
+
 class Store:
     def __init__(self, url: str, key: str):
         self.cipher = Fernet(key.encode())
@@ -74,11 +92,16 @@ class Store:
             @event.listens_for(self.engine, "connect")
             def sqlite_pragmas(dbapi, _):
                 dbapi.execute("PRAGMA journal_mode=WAL")
+                dbapi.execute("PRAGMA foreign_keys=ON")
         with self.engine.begin() as conn:
             if self.engine.dialect.name == "postgresql":
                 from sqlalchemy import text
                 conn.execute(text("SELECT pg_advisory_xact_lock(731940122)"))
             metadata.create_all(conn)
+            from pa_agent.web.research_store import create_tables
+            create_tables(conn)
+            from pa_agent.web.mining_store import create_tables as create_mining_tables
+            create_mining_tables(conn)
 
     def seal(self, data):
         return self.cipher.encrypt(json.dumps(data, ensure_ascii=False).encode()).decode()
@@ -88,14 +111,15 @@ class Store:
 
     def register(self, username, password):
         uid = str(uuid.uuid4())
+        password_hash = hasher.hash(password)
         try:
             with self.engine.begin() as conn:
                 conn.execute(insert(users).values(
-                    id=uid, username=username.casefold(), password=hasher.hash(password),
+                    id=uid, username=username.casefold(), password=password_hash,
                     settings=self.seal({}), created=time.time(), busy_until=0, lease=""))
         except IntegrityError:
             return None
-        return {"id": uid, "username": username.casefold()}
+        return AuthenticatedUser(uid, username.casefold(), password_hash)
 
     def login(self, username, password):
         with self.engine.connect() as conn:
@@ -104,15 +128,23 @@ class Store:
             hasher.verify(user["password"] if user else DUMMY_HASH, password)
         except VerificationError:
             return None
-        return {"id": user["id"], "username": user["username"]} if user else None
+        return AuthenticatedUser(user["id"], user["username"], user["password"]) if user else None
 
-    def create_session(self, uid):
+    def create_session(self, current: AuthenticatedUser):
         token = secrets.token_urlsafe(32)
         now = time.time()
         with self.engine.begin() as conn:
+            # The conditional write locks this account until insertion commits.
+            # A concurrent password change either invalidates this generation
+            # first, or runs afterwards and deletes the newly issued session.
+            matched = conn.execute(update(users).where(
+                users.c.id == current.id, users.c.password == current.password_hash
+            ).values(password=users.c.password))
+            if not matched.rowcount:
+                return None
             conn.execute(delete(sessions).where(sessions.c.expires < now))
             conn.execute(insert(sessions).values(
-                token=hashlib.sha256(token.encode()).hexdigest(), user_id=uid, expires=now+28800))
+                token=hashlib.sha256(token.encode()).hexdigest(), user_id=current.id, expires=now+28800))
         return token
 
     def user_for_session(self, token):
@@ -131,15 +163,21 @@ class Store:
                 sessions.c.token == hashlib.sha256(token.encode()).hexdigest()))
 
     def change_password(self, uid, old, new):
-        with self.engine.begin() as conn:
+        with self.engine.connect() as conn:
             row = conn.execute(select(users).where(users.c.id == uid)).mappings().one()
-            try:
-                hasher.verify(row["password"], old)
-            except VerificationError:
-                return False
-            conn.execute(update(users).where(users.c.id == uid).values(password=hasher.hash(new)))
+        try:
+            hasher.verify(row["password"], old)
+        except VerificationError:
+            return None
+        password_hash = hasher.hash(new)
+        with self.engine.begin() as conn:
+            changed = conn.execute(update(users).where(
+                users.c.id == uid, users.c.password == row["password"]
+            ).values(password=password_hash))
+            if not changed.rowcount:
+                return None
             conn.execute(delete(sessions).where(sessions.c.user_id == uid))
-        return True
+        return AuthenticatedUser(uid, row["username"], password_hash)
 
     def settings(self, uid):
         with self.engine.connect() as conn:

@@ -1,0 +1,35 @@
+# Deny by default: Git history, .env files, databases, local credentials, tests,
+# docs, virtual environments and unrecognized files never enter the build context.
+**
+!Dockerfile
+!app.py
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!pa_agent/
+!pa_agent/**
+!public/
+!public/**
+!prompt_engineering/
+!prompt_engineering/**
+!third_party/
+!third_party/**
+
+# Exclude private/runtime artifacts even if they occur inside source directories.
+**/.git
+**/.env
+**/.env.*
+**/.ssh
+**/.pa-agent-web
+**/__pycache__
+**/*.py[cod]
+**/*.key
+**/*.pem
+**/*credentials*
+**/*.log
+**/*.sqlite*
+**/*.db
+**/*.dump
+**/settings.json
+**/settings.local.json

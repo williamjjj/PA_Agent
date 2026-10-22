@@ -8,7 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pa_agent.config.settings import PromptSettings, Settings, ValidationSettings
 
 PROMPTS = Path(__file__).resolve().parents[2] / "prompt_engineering"
-SECRET_FIELDS = ("api_key", "tradingview_password", "tushare_token", "feishu_webhook", "feishu_secret", "pushplus_token")
+SECRET_FIELDS = ("api_key", "tradingview_password", "tushare_token", "birdeye_api_key",
+                 "feishu_webhook", "feishu_secret", "pushplus_token")
 
 
 class WebSettings(BaseModel):
@@ -32,6 +33,7 @@ class WebSettings(BaseModel):
     tradingview_username: str = Field(default="", max_length=100)
     tradingview_password: str = Field(default="", max_length=256)
     tushare_token: str = Field(default="", max_length=256)
+    birdeye_api_key: str = Field(default="", max_length=4096)
     kline_adjust: Literal["qfq", "hfq", "none"] = "qfq"
     prompt_overrides: dict[str, str] = Field(default_factory=dict)
     notify_enabled: bool = False
@@ -50,7 +52,7 @@ class WebSettings(BaseModel):
             raise ValueError("模型地址须为 HTTPS，不可包含账号、查询参数或自定义端口。")
         return value
 
-    @field_validator("api_key")
+    @field_validator("api_key", "birdeye_api_key")
     @classmethod
     def valid_header_key(cls, value):
         if value and any(ord(c) < 33 or ord(c) > 126 for c in value):
@@ -109,6 +111,7 @@ class WebSettings(BaseModel):
 def merge_settings(current, changes, clear):
     if set(clear) - set(SECRET_FIELDS):
         raise ValueError("无效的凭据名称。")
+    previous = WebSettings.model_validate(current)
     current = dict(current)
     for key, value in changes.items():
         if key in SECRET_FIELDS and not value:
@@ -116,4 +119,14 @@ def merge_settings(current, changes, clear):
         current[key] = value
     for key in clear:
         current[key] = ""
-    return WebSettings.model_validate(current)
+    updated = WebSettings.model_validate(current)
+    if (previous.api_key and _provider_origin(previous.base_url) != _provider_origin(updated.base_url)
+            and not changes.get("api_key") and "api_key" not in clear):
+        raise ValueError("更换模型服务域名时，请重新填写 API Key 或明确清除已保存的 API Key。")
+    return updated
+
+
+def _provider_origin(value):
+    """Compare destinations independently of API paths and the implicit TLS port."""
+    parsed = urlsplit(value)
+    return parsed.scheme.lower(), parsed.hostname, parsed.port or 443

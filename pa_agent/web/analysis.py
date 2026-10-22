@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict
+from decimal import Decimal
 
 from pa_agent.ai.json_validator import JsonValidator
-from pa_agent.ai.prompt_assembler import PromptAssembler
+from pa_agent.ai.kline_features import bar_candle_direction_label
+from pa_agent.ai.prompt_assembler import _KLINE_INDICATOR_NOTE, PromptAssembler
 from pa_agent.ai.router import route_strategy_files
+from pa_agent.data.datetime_ts import format_epoch_for_display
 from pa_agent.orchestrator.free_chat import FreeChatSession
 from pa_agent.orchestrator.two_stage import TwoStageOrchestrator
 from pa_agent.records.schema import AnalysisRecord, ExperienceEntry
@@ -48,6 +52,36 @@ class AccountPrompts(PromptAssembler):
 
     def _load(self, filename):
         return self.overrides[filename] if filename in self.overrides else super()._load(filename)
+
+    @staticmethod
+    def _render_kline_table(frame, limit=None):
+        """Keep token prices and fractional volumes visible to both PA stages.
+
+        The desktop renderer's four decimal places can turn an entire small
+        token candle into zero. Decimal text from the float's shortest exact
+        representation keeps the same frozen numbers without exponent syntax
+        or changing any numeric input to the analysis pipeline.
+        """
+        def number(value):
+            if not math.isfinite(value):
+                return "N/A"
+            text = format(Decimal(str(value)), "f")
+            return text.rstrip("0").rstrip(".") if "." in text else text
+
+        lines = [
+            "序号 | 时间                | 开盘价 | 最高价 | 最低价 | 收盘价 | 阳阴 | 成交量 | EMA20 | ATR14",
+            "-----+--------------------+--------+--------+--------+--------+------+--------+-------+------",
+        ]
+        bars = frame.bars[:limit] if limit is not None else frame.bars
+        for i, bar in enumerate(bars):
+            values = [number(getattr(bar, name)) for name in ("open", "high", "low", "close")]
+            lines.append(" | ".join([
+                str(bar.seq), format_epoch_for_display(bar.ts_open, short=True), *values,
+                bar_candle_direction_label(bar), number(bar.volume),
+                number(frame.indicators.ema20[i]), number(frame.indicators.atr14[i]),
+            ]))
+        lines.append(_KLINE_INDICATOR_NOTE)
+        return "\n".join(lines)
 
 
 class WebOrchestrator(TwoStageOrchestrator):

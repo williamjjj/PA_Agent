@@ -6,23 +6,21 @@ import math
 import re
 from typing import Any
 
-from pa_agent.util.price_tick import infer_price_tick_from_frame
+from pa_agent.util.price_precision import price_text, round_price
+from pa_agent.util.price_tick import infer_price_tick_from_frame, round_to_tick
 
 logger = logging.getLogger(__name__)
 
 # Swing pivots for S/R refill: only scan recent bars (K1..K40), not full history.
 _SWING_LOOKBACK_BARS = 40
 
-_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+_NUMBER = re.compile(r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 
 
 def _price_text(value: float, tick: float | None) -> str:
     if tick is None or tick <= 0:
-        text = f"{value:.6f}".rstrip("0").rstrip(".")
-        return "0" if text in ("", "-0") else text
-    decimals = max(0, min(6, int(round(-math.log10(tick))) if tick < 1 else 0))
-    text = f"{value:.{decimals}f}".rstrip("0").rstrip(".")
-    return "0" if text in ("", "-0") else text
+        return price_text(value)
+    return price_text(round_to_tick(value, tick))
 
 
 def _parse_level_bounds(raw: Any) -> tuple[float, float] | None:
@@ -30,12 +28,12 @@ def _parse_level_bounds(raw: Any) -> tuple[float, float] | None:
         return None
     if isinstance(raw, (int, float)):
         v = float(raw)
-        return (v, v) if v > 0 else None
+        return (v, v) if math.isfinite(v) and v > 0 else None
     text = str(raw).strip()
     if not text:
         return None
     nums = [float(m) for m in _NUMBER.findall(text)]
-    if not nums:
+    if not nums or not all(math.isfinite(value) for value in nums):
         return None
     lo, hi = min(nums), max(nums)
     return (lo, hi) if lo > 0 else None
@@ -132,7 +130,7 @@ def _swing_support_prices(
             low = float(bar.low)
             if low < close:
                 candidates.append(low)
-    dedup = sorted({round(v, 8) for v in candidates}, reverse=True)
+    dedup = sorted({round_price(v, 8) for v in candidates}, reverse=True)
     return dedup[:max_levels]
 
 
@@ -156,7 +154,7 @@ def _swing_resistance_prices(
             high = float(bar.high)
             if high > close:
                 candidates.append(high)
-    dedup = sorted({round(v, 8) for v in candidates})
+    dedup = sorted({round_price(v, 8) for v in candidates})
     return dedup[:max_levels]
 
 
@@ -176,14 +174,14 @@ def _merge_level_texts(
         bounds = _parse_level_bounds(raw)
         if bounds is None:
             continue
-        key = round(_level_mid(bounds), 8)
+        key = round_price(_level_mid(bounds), 8)
         if key in seen:
             continue
         seen.add(key)
         entries.append((key, str(raw)))
 
     for price in swing_prices:
-        key = round(price, 8)
+        key = round_price(price, 8)
         if key in seen:
             continue
         seen.add(key)
@@ -279,15 +277,15 @@ def refresh_stage1_support_resistance(
     if changed:
         if old_sup != new_sup:
             logger.info(
-                "support_levels refreshed for close=%.4f: %s -> %s",
-                close,
+                "support_levels refreshed for close=%s: %s -> %s",
+                price_text(close),
                 old_sup,
                 new_sup,
             )
         if old_res != new_res:
             logger.info(
-                "resistance_levels refreshed for close=%.4f: %s -> %s",
-                close,
+                "resistance_levels refreshed for close=%s: %s -> %s",
+                price_text(close),
                 old_res,
                 new_res,
             )

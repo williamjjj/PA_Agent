@@ -12,6 +12,7 @@ from typing import Any
 
 from pa_agent.data.base import KlineBar, KlineFrame
 from pa_agent.util.price_tick import infer_price_tick_from_frame
+from pa_agent.util.price_precision import round_price
 
 MARKET_FEATURES_SECTION_PREFIX = "## 程序结构辅助特征"
 _DEFAULT_LOOKBACK = 40
@@ -413,7 +414,7 @@ def _dedupe_breakout_events(events: list[BreakoutEvent]) -> list[BreakoutEvent]:
     pool = recent if recent else list(events[-_MAX_BREAKOUT_EVENTS:])
     by_level: dict[tuple[str, float], BreakoutEvent] = {}
     for event in pool:
-        key = (event.level_kind, round(event.level_price, 6))
+        key = (event.level_kind, round_price(event.level_price, 6))
         prev = by_level.get(key)
         if prev is None:
             by_level[key] = event
@@ -746,9 +747,9 @@ def _find_swings_with_seq(bars: tuple[KlineBar, ...]) -> list[SwingPivot]:
             if lo >= float(bars[i + 1].low):
                 is_low = False
         if is_high:
-            pivots.append(SwingPivot(seq=int(bars[i].seq), kind="high", price=round(h, 6)))
+            pivots.append(SwingPivot(seq=int(bars[i].seq), kind="high", price=round_price(h, 6)))
         if is_low:
-            pivots.append(SwingPivot(seq=int(bars[i].seq), kind="low", price=round(lo, 6)))
+            pivots.append(SwingPivot(seq=int(bars[i].seq), kind="low", price=round_price(lo, 6)))
     pivots.sort(key=lambda p: p.seq)
     return pivots
 
@@ -987,7 +988,7 @@ def _structure_levels(
     resistances: list[float] = []
     seen: set[float] = set()
     for pivot in reversed(swings):
-        key = round(pivot.price, 8)
+        key = round_price(pivot.price, 8)
         if key in seen:
             continue
         seen.add(key)
@@ -1010,13 +1011,13 @@ def _measured_move_candidates(
 ) -> list[MeasuredMoveCandidate]:
     out: list[MeasuredMoveCandidate] = []
     if range_high is not None and range_low is not None and range_high > range_low:
-        height = round(range_high - range_low, 6)
+        height = round_price(range_high - range_low, 6)
         out.append(
             MeasuredMoveCandidate(
                 kind="range_up",
                 reference="区间高度向上翻测",
                 height=height,
-                target_price=round(range_high + height, 6),
+                target_price=round_price(range_high + height, 6),
                 bar_range=f"K{lookback}-K1",
             )
         )
@@ -1025,7 +1026,7 @@ def _measured_move_candidates(
                 kind="range_down",
                 reference="区间高度向下翻测",
                 height=height,
-                target_price=round(range_low - height, 6),
+                target_price=round_price(range_low - height, 6),
                 bar_range=f"K{lookback}-K1",
             )
         )
@@ -1033,25 +1034,25 @@ def _measured_move_candidates(
     highs = sorted([p for p in swings if p.kind == "high"], key=lambda p: p.seq)
     lows = sorted([p for p in swings if p.kind == "low"], key=lambda p: p.seq)
     if len(highs) >= 1 and len(lows) >= 1:
-        leg_up = round(highs[0].price - lows[0].price, 6)
+        leg_up = round_price(highs[0].price - lows[0].price, 6)
         if leg_up > 0:
             out.append(
                 MeasuredMoveCandidate(
                     kind="leg_up",
                     reference=f"最近leg K{lows[0].seq}-K{highs[0].seq}",
                     height=leg_up,
-                    target_price=round(close + leg_up, 6),
+                    target_price=round_price(close + leg_up, 6),
                     bar_range=f"K{highs[0].seq}-K{lows[0].seq}",
                 )
             )
-        leg_down = round(highs[0].price - lows[0].price, 6)
+        leg_down = round_price(highs[0].price - lows[0].price, 6)
         if leg_down > 0:
             out.append(
                 MeasuredMoveCandidate(
                     kind="leg_down",
                     reference=f"最近leg K{highs[0].seq}-K{lows[0].seq}",
                     height=leg_down,
-                    target_price=round(close - leg_down, 6),
+                    target_price=round_price(close - leg_down, 6),
                     bar_range=f"K{highs[0].seq}-K{lows[0].seq}",
                 )
             )

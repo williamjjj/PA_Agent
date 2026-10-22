@@ -1,7 +1,320 @@
 # Web migration validation
 
+## Deployment preparation — 2026-10-22
+
+The uploaded Vercel notification reports that the Git commit author is not
+recognized as a member of team TIANWEI. It does not report an exhausted runtime
+quota or a failed application build. The user confirmed that both accounts are
+their own and selected a Vercel web/analysis/backtest trial without a persistent
+Worker. Account association and persistent PostgreSQL configuration still need
+verification in the hosting account; no public trial URL has been verified.
+
+The optional container deployment package builds successfully with Python 3.12,
+uv 0.12.23 and the existing lockfile. An actual first startup exposed root-owned
+0600 source files inherited from the managed checkout. The Dockerfile now grants
+read/traverse access inside the image while retaining root ownership and a
+non-root runtime user; the workspace source permissions were not changed.
+
+An isolated Compose project then passed five live checks: Web/HTML/database
+readiness, invitation enforcement and two registrations, isolated personal
+provider settings, a separate Worker completing an eight-candidate synthetic
+research task with private export, and session/settings/results persistence
+after all three services restarted. The database was PostgreSQL 17 and the
+application filesystem was read-only. No real model or data-provider calls were
+made. These local checks do not prove Vercel hosting or external provider access.
+
+The configuration helper creates new private files with mode 0600, refuses
+overwrites, and does not print generated values. Compose configuration parsing,
+helper checks, Ruff and whitespace checks passed. Evidence is in
+`/workspace/.cloud-setup/pa-deploy-smoke/validation.json` and the
+`pa-deploy-*.log` files under `/workspace/.cloud-setup/logs/`.
+
+## Prediction repair and background mining, stage 3 — 2026-10-22
+
+The previously failing prediction property is fixed before stage-three work.
+The production normalizer and validator intentionally preserve a model-selected
+tied maximum; the older property and prompt incorrectly demanded the first
+maximum. The property now asserts the exact existing policy (preserve a valid
+maximum, otherwise use the fixed-order first maximum), rather than merely
+accepting membership or skipping ties. Regression cases check the validator
+still rejects non-maxima and zero-total probabilities. A real production defect
+was also fixed: `" Bearish "` now becomes `"bearish"` for both unique and tied
+maxima through the public normalizer. The intermediate complete suite passed
+**903 tests, 7 deselected**, before mining implementation began.
+
+Stage three provides a durable database queue and explicitly started CPU
+Worker. Candidate eligibility and fitness use training data only. Completed
+artifacts contain the winning named-token formula, provenance, configuration,
+seed, versions, training ranking and separate validation/test research results.
+This is bounded deterministic RPN search, not legacy Transformer/GPU training.
+
+| Latest check | Result |
+| --- | --- |
+| Full offline suite, unchanged live selection | **996 passed, 0 failed, 7 deselected** |
+| Web suite, included above | **357 passed** |
+| Formula interpreter and mining engine | **43 passed**, included above |
+| Durable mining store | **32 passed**, included above |
+| Independent Worker lifecycle | **14 passed**, included above |
+| Mining authenticated API with real CLI processes | **4 passed**, included above |
+| PostgreSQL 17.11 mining and schema concurrency | **33 checks passed** in a disposable cluster |
+| SSE parser | **4 passed** |
+| Runtime-error Ruff, JavaScript syntax, diff whitespace | Passed |
+| Chromium desktop/mobile mining workflows | **9 checks passed**, 1440×1000 and 390×844 |
+| Lost submission followed by rate limiting | Focused browser regression passed: 3 requests, 1 idempotency key, 1 task |
+
+Engine tests cover named-token validation, causal trailing operators, null and
+invalid arithmetic behavior, bounded generation, deterministic candidates,
+train-only eligibility/selection, future perturbation, exact checkpoint replay,
+and refusal to publish incomplete searches. The existing 45 research-engine
+tests continue to pass after extracting support for formula-valued signals.
+
+Persistence checks include tenant ownership, composite dataset foreign keys,
+atomic quotas/idempotency, one running job per account, independent PA leases,
+claim contention and queue fairness, lease-token fencing including expiry while
+waiting for a row lock, cancellation versus checkpoint/final commit, immutable
+results, budget accounting and bounded crash recovery. An hour-long outage
+charges only the expired lease's unconfirmed work, not the entire offline wait.
+All 32 store scenarios and concurrent schema initialization were repeated on
+PostgreSQL; the disposable database was dropped and its server stopped.
+
+An actual CLI process was killed after candidate 1 on a 5,000-bar, 128-trial job.
+After the real 30-second lease expired, a new process resumed attempt 2 and
+completed all candidates. Formula, selection record and full three-segment
+backtest were exactly equal to uninterrupted execution. Accumulated time was
+33.02 seconds, including conservative unconfirmed lease time. A separate actual
+SIGTERM left a queued checkpoint and no active lease. All smoke subprocesses
+were stopped. Another real restart after a source fingerprint change failed
+with `runtime_changed` and published no artifact, as required.
+
+Browser testing used Python Playwright/system Chromium because Browser plugin
+was unavailable. Tests used the real local FastAPI server and real CLI Worker:
+offline queue display, reload recovery, cancellation, explicit new-job retry,
+deliberately lost POST response and reuse of the same idempotency key after
+reload, online completion, formula/metrics/ledger, full export, polling pause,
+25-row pagination, mobile layout and account cleanup. All four screenshots
+were visually inspected. There were no page errors or unexpected console
+errors; the single deliberately aborted network request was recorded separately.
+An additional focused check injected a lost submission response followed by HTTP
+429, then reloaded and retried. The original key and eight-trial configuration
+were retained, and exactly one task existed after three requests; only the
+intentional network/429 console events were present. Evidence is
+`pa-mining-qa/idempotency-429-results.json` under the directory below.
+
+The maximum synthetic engine check (5,000 bars, 128 candidates) completed in
+about 1.4 seconds, with a longest candidate around 0.017 seconds in this machine.
+This is not a production performance guarantee or evidence of investment value.
+
+Evidence is outside the checkout: `logs/pa-prediction-fix.*`,
+`logs/pa-mining-regression.*`, `pa-research-pg/mining-validation.json`,
+`pa-mining-worker-smoke/{validation,upgrade-rejection}.json`, and
+`pa-mining-qa/`, all under `/workspace/.cloud-setup/`. The cloud configuration
+draft's `start_skill` was updated with the tested independent Worker startup,
+shared database requirements and functional readiness checks; saving a draft
+does not deploy or publish the environment. No new dependencies, live Birdeye
+calls, paid LLM calls, original AlphaGPT training, trades or remote deployment
+were performed. The original AlphaGPT checkout remains unchanged.
+
+Earlier sections below retain their historical results; their prediction failure
+is resolved by this entry. See [the mining contract](ALPHAGPT_MINING.md).
+
+## Historical research, stage 2 — 2026-10-22
+
+The second stage adds bounded historical research to the existing authenticated
+web application. CSV, personal Birdeye history and owned source snapshots become
+immutable datasets; a fixed factor rule fits thresholds on the chronological
+training segment and reports validation/test separately. The integration uses
+the causal factor contract, not the legacy AlphaGPT training/backtest pipeline.
+The AlphaGPT checkout remains unchanged.
+
+| Check | Result |
+| --- | --- |
+| Full offline suite, unchanged live selection | **892 passed, 1 existing failure, 7 deselected** |
+| Web suite, included above | **264 passed** |
+| Research engine | **45 passed**, included above |
+| Research data ingestion | **40 passed**, included above |
+| Research persistence | **12 passed**, included above |
+| Research authenticated API | **7 passed**, included above |
+| SSE parser tests | **4 passed** |
+| Runtime-error Ruff, JavaScript syntax, diff whitespace | Passed |
+| PostgreSQL 17.11 persistence/schema concurrency | **12 checks passed** in a disposable local cluster |
+| Chromium browser workflows | **12 checks passed**, 1440×1000 and 390×844; no page/console errors |
+
+The original prediction tie property still fails with `direction="bearish"`
+and an empty probability dictionary. It is the same previously documented
+normalizer/property contract mismatch. No test assertions or selections were
+weakened; the full CI suite therefore remains red on that existing defect.
+
+Engine checks cover independently calculable next-open buys/sells, fee-inclusive
+quantity, forced horizon exits, initial-equity drawdown, ledger reconciliation,
+benchmark alignment, no-trade null win rate, and deterministic cost scenarios.
+Changing only test OHLCV leaves the fitted thresholds and entire training and
+validation results unchanged. Training performance is explicitly in-sample.
+Repeated human tuning after viewing test results is described as selection bias.
+
+Data checks cover closed/aligned UTC bars, 300–5000 count bounds, safe CSV error
+handling, duplicate/conflict handling, requested leading/trailing coverage,
+hash identity including requested bounds, personal Birdeye headers, bounded
+attempts/deadline, and no liquidity/FDV filling. HTTP calls are mocked. Uploaded
+market identity stays user-declared. Gap/zero-volume datasets cannot run.
+
+API checks exercise two accounts, stale account headers, CSRF, dataset/run/export
+ownership, unchanged saved results despite a broken recalculation function,
+deletion protection, lease cleanup, error secrecy and the scoped 2.5 MB request
+limit (CSV content maximum 2 MB, other endpoints remain 600 KB). An exported
+dataset/config replays to the exact original engine result. An independent
+review also verified real API ingestion of 5,000 bars and the same ownership
+and deletion behavior.
+
+PostgreSQL validation used a fresh local cluster on `127.0.0.1:55433` and a
+disposable database. It exercised concurrent schema initialization, duplicate
+imports of 5,000-row data, per-account quotas, actual composite foreign-key
+enforcement, run/delete races and metadata-only pagination. The database was
+dropped and that cluster stopped; existing databases were not touched.
+
+A bounded 5,000-bar synthetic run including parsing completed in 0.531 seconds
+in this environment; its JSON data/result export was approximately 2 MB.
+This is a local example, not a production latency/load guarantee.
+
+Browser validation used Python Playwright with system Chromium because the
+Browser plugin was unavailable. A real local FastAPI server and isolated SQLite
+store exercised the no-model-key demo, insufficient current chart, CSV import,
+all three segments, curves/ledger/costs, JSON export, saved-result replay without
+recomputation, fixed research selection across main-chart changes, late response
+suppression, 25-row pagination and account-switch cleanup. Gap quality is shown
+before running. Desktop/mobile screenshots were visually inspected; navigation
+selection and chart viewport resizing were corrected and the workflow rerun.
+
+Evidence: full run log/JUnit in `/workspace/.cloud-setup/logs/pa-research-regression.*`;
+PostgreSQL checks in `/workspace/.cloud-setup/pa-research-pg/validation.{json,log}`.
+Browser scripts, results and screenshots are in `/workspace/.cloud-setup/pa-research-qa/`.
+No new dependency or cloud startup configuration is required. No live Birdeye
+permission check, paid model call, training job, trade or remote deployment was
+performed. See [the research contract](ALPHAGPT_BACKTEST.md).
+
+## AlphaGPT factor panel, stage 1 — 2026-10-13
+
+The first integration stage now provides account-owned Birdeye OHLCV access,
+full Solana address identity, immutable snapshots shared by PA and factors,
+and an independent browser factor panel. Snapshot payloads persist causal
+factor results before analysis; PA records copy that evidence with its version,
+snapshot ID and dataset hash. Saved evidence remains visible after the
+one-hour source snapshot expires. No training, backtest or trading runner is
+started by this feature.
+
+| Latest check | Result |
+| --- | --- |
+| Full offline suite, unchanged live selection | **788 passed, 1 existing failure, 7 deselected** |
+| Web suite, also included in full run | **160 passed** |
+| Causal factor tests | **22 passed**, included above |
+| Birdeye adapter/API tests | **38 passed**, included above |
+| Shared snapshot/API evidence tests | **7 passed**, included above |
+| Small-price PA prompts and precision helpers | **20 passed**, included above |
+| SSE parser tests | **4 passed** |
+| Runtime-error Ruff checks, JavaScript syntax, diff whitespace | Passed |
+| Chromium browser workflows | **9 checks passed**, 1440×1000 and 390×844 |
+
+The one full-suite failure is the previously reported prediction tie property
+described below. No assertions were weakened and no extra exclusions were
+added. The full CI gate still fails on that existing property.
+
+Numerical tests verify known raw factor values, warm-up and gaps, invalid or
+forming-bar rejection, strict finite JSON, and that changing/appending future
+data does not change any historical factor values. Missing historical
+liquidity/FDV is explicitly unavailable. Price precision regressions exercise
+the actual two-stage prompt builders with `0.00000267613` and `1e-9`, and tick,
+structure-level and chart helpers down to `1e-12`. Existing ordinary-price
+assertions remain unchanged.
+
+API tests prove that factor viewing needs no LLM key, a second user cannot
+access the snapshot/evidence/record, the exact chart indicators reach PA, and
+stored evidence is unchanged even if the factor implementation later fails.
+The factor failure path emits unavailable data without synthetic zeros or
+private exception details, and does not prevent PA from analyzing the input.
+Different full addresses, sources, periods and adjustments do not share
+incremental context. Birdeye tests use mocked HTTP with two actual authenticated
+API clients and check credential encryption, absence of environment-key
+fallback, paging, bounded retries, closed data and safe actionable errors.
+
+Browser validation used the real local FastAPI server with an isolated SQLite
+database and Python Playwright/Chromium because Browser plugin was not
+available. The workflow was: register without an LLM key, calculate demo
+factors, inspect history, import CSV into a distinct snapshot, switch accounts,
+and reopen a saved record. A delayed response could not repopulate a replaced
+chart; deleting the temporary source snapshot did not prevent the saved
+factor button from replaying record evidence without network recomputation.
+Birdeye address and masked-key fields, low-price displays, responsive layout,
+and account cleanup were checked. There were no page or console errors.
+
+Evidence: `/workspace/.cloud-setup/pa-quant-qa/` contains browser scripts,
+results and desktop/mobile screenshots. Logs and JUnit results are in
+`/workspace/.cloud-setup/logs/pa-quant-*`. Screenshots and test databases are
+outside the checkout. No new package dependencies were added.
+
+Live Birdeye access and actual account-plan permissions remain unverified:
+no user key was available to these tests, and the official documentation
+request was denied by the managed proxy. The adapter uses the v1 OHLCV contract
+already present in AlphaGPT; volume is labeled provider-reported. No paid LLM
+generation, remote deployment or production-load test was performed. See
+[the factor contract](ALPHAGPT_FACTORS.md) for numerical and calendar limits.
+
+## Account isolation follow-up — 2026-10-13
+
+Starting point: `388ec29` on `codex/web-multiuser-vercel`, CPython 3.12.14,
+dependencies installed from the existing lockfile. The branch already provided
+registration, personal model configuration, encrypted credentials and tenant
+storage. This change hardens three cases:
+
+- A stale browser tab sends the account ID it displayed. The server compares
+  it with the authenticated Cookie before reading or changing private data.
+  An identity mismatch returns HTTP 409 without changing the new account.
+  BroadcastChannel and focus/visibility checks clear stale private views.
+- Session issuance locks and checks the exact password hash that was verified.
+  Password changes use a conditional update and revoke sessions in one
+  transaction, preventing old-password verification from issuing a valid
+  session after rotation. The database schema is unchanged.
+- A provider origin change requires an explicitly supplied API key or explicit
+  removal of the stored key. Same-origin path changes retain the key. Both
+  settings saves and model-list probes enforce the rule before network access.
+
+| Current check | Result |
+| --- | --- |
+| Web regression suite | **73 passed** |
+| Authentication concurrency on PostgreSQL 17.11 | **4 passed**; disposable database removed |
+| Full offline regression | **701 passed, 1 failed, 7 deselected** |
+| SSE parser tests | **4 passed** |
+| Runtime-error Ruff checks and JavaScript syntax | Passed |
+| Chromium at 1440×1000 and 390×844 | Registration, private settings, two accounts, cross-tab identity and provider-change flows passed |
+
+The full-suite failure is the existing property
+`tests/property/test_next_bar_prediction.py::test_p2_direction_equals_argmax`.
+It demands the first maximum when probabilities tie, while both the normalizer
+and validator explicitly preserve/accept any tied winner. An empty probability
+dictionary with `direction="bearish"` reproduces the failure; a valid 40/40/20
+tie exposes the same contract mismatch. This change does not alter prediction
+behavior, weaken the assertion or add test exclusions. The complete CI gate
+therefore remains blocked by that failure.
+
+Browser checks used the real local FastAPI server and a disposable SQLite
+database, fake model credentials, and no external requests. Disabling
+BroadcastChannel verified the server-side fallback: the old tab's settings
+save returned the expected 409, cleared its inputs and left the new user's key
+unchanged. Reloaded settings returned only credential-presence flags. Desktop
+and mobile had no horizontal overflow or JavaScript runtime exceptions; the
+deliberate 409 was the only browser console HTTP error. A logged-in reload's
+demo-chart clearing issue was corrected by loading identity before rendering
+the initial chart.
+
+Local evidence is under `/workspace/.cloud-setup/pa-web-qa/` (browser results,
+script and screenshots) and `/workspace/.cloud-setup/logs/` (focused/full
+regression, JUnit and PostgreSQL logs). These are local checks; no real model
+generation, production deployment or AlphaGPT integration was performed.
+AlphaGPT feasibility and required corrections are documented in
+[ALPHAGPT_INTEGRATION.md](ALPHAGPT_INTEGRATION.md).
+
+## Earlier migration verification — 2026-10-10
+
 Base: `90924d09f59e4eae7b76b6eb56c21cf446e32096` (`v0/python-4aa3dbb3`).
-Latest local validation: 2026-10-10, Linux, CPython 3.12.14, locked dependencies.
+Earlier local validation: 2026-10-10, Linux, CPython 3.12.14, locked dependencies.
 
 ## Results
 

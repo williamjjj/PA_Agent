@@ -1,10 +1,14 @@
 import { consumeSSE } from "/stream.mjs";
+import { initResearch } from "/research.mjs";
+import { initMining } from "/mining.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const state = { user: null, settings: null, data: null, record: null, catalog: [], busy: false,
-  controller: null, tracking: null, page: 0, epoch: 0, prompts: [], treeTimer: null };
-let chart, candles, ema, priceLines = [], toastTimer;
+  controller: null, tracking: null, page: 0, epoch: 0, prompts: [], treeTimer: null,
+  quant: null, quantBusy: false, quantRequest: 0, snapshotPending: null };
+let chart, candles, ema, priceLines = [], toastTimer, quantChart, quantSeries;
+const accountChannel = typeof BroadcastChannel === "function" ? new BroadcastChannel("pa-account") : null;
 const labels = {
   cycle_position: "市场周期", direction: "市场方向", diagnosis_confidence: "诊断置信度",
   market_phase: "市场阶段", key_signals: "关键信号", htf_context: "高周期背景",
@@ -39,7 +43,17 @@ function display(value) {
   if (typeof value === "boolean") return value ? "是" : "否";
   return labels[value] || String(value);
 }
-function price(value) { return Number.isFinite(Number(value)) ? Number(value).toLocaleString("en-US", { maximumFractionDigits: 5 }) : "—"; }
+function price(value) {
+  if (value === null || value === undefined || value === "" || !Number.isFinite(Number(value))) return "—";
+  const numeric = Number(value), magnitude = Math.abs(numeric);
+  return numeric.toLocaleString("en-US", { maximumSignificantDigits: 9,
+    notation: magnitude > 0 && magnitude < 1e-8 ? "scientific" : "standard" });
+}
+function chartPriceFormat(data) {
+  const reference = data.bars.at(-1)?.close || 1;
+  const minMove = Math.min(0.01, 10 ** (Math.floor(Math.log10(Math.abs(reference))) - 7));
+  return { type: "custom", minMove, formatter: price };
+}
 function toast(message, error = false) {
   clearTimeout(toastTimer);
   const box = $("#toast"); box.textContent = message; box.className = "toast" + (error ? " error" : "");
@@ -48,16 +62,14 @@ function toast(message, error = false) {
 async function api(url, method = "GET", body, signal) {
   const epoch = state.epoch;
   const response = await fetch(url, { method, credentials: "same-origin", cache: "no-store", signal,
-    headers: { ...(method === "GET" ? {} : { "x-pa-request": "1" }), ...(body ? { "Content-Type": "application/json" } : {}) },
+    headers: { ...(method === "GET" ? {} : { "x-pa-request": "1" }), ...(state.user ? { "x-pa-user": state.user.id } : {}), ...(body ? { "Content-Type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined });
   if (!response.ok) {
     let detail;
     try { detail = (await response.json()).detail; } catch { /* non-JSON gateway errors */ }
-    const error = new Error(typeof detail === "string" ? detail : "请求失败（HTTP " + response.status + "）。");
-    if (response.status === 401 && epoch === state.epoch) {
-      state.epoch++; state.user = null; clearPrivateViews();
-      text("#account-name", "会话已过期"); text("#model-badge", "尚未配置模型");
-      $("#logout-button").classList.add("hidden"); openDialog("#account-dialog");
+    const error = new Error(typeof detail === "string" ? detail : detail?.message || "请求失败（HTTP " + response.status + "）。");
+    if ((response.status === 401 || detail?.code === "account_changed") && epoch === state.epoch) {
+      forgetAccount(); openDialog("#account-dialog");
     }
     error.status = response.status; throw error;
   }
@@ -77,7 +89,8 @@ function requireUser() {
 function setBusy(busy) {
   state.busy = busy;
   ["#analyze-button", "#market-button", "#import-button", "#demo-button", "#source-select", "#market-symbol",
-   "#market-timeframe", "#market-count", "#market-exchange"].forEach((s) => { $(s).disabled = busy; });
+   "#market-timeframe", "#market-count", "#market-exchange", "#market-instrument-id"].forEach((s) => { $(s).disabled = busy; });
+  $("#quant-button").disabled = busy || state.quantBusy;
   $("#chat-send").disabled = busy || state.record?.result?.status !== "complete";
   $("#cancel-button").classList.toggle("hidden", !busy);
   $("#analysis-progress").classList.toggle("hidden", !busy);
@@ -85,7 +98,15 @@ function setBusy(busy) {
 function stopTracking() {
   clearInterval(state.tracking); state.tracking = null; $("#tracking").checked = false;
 }
+function forgetAccount() {
+  state.epoch++; state.user = null; clearPrivateViews();
+  text("#account-name", "访客模式"); text("#avatar", "访");
+  text("#account-note", "账户状态已变更"); text("#model-badge", "尚未配置模型");
+  $("#logout-button").classList.add("hidden");
+}
 function clearPrivateViews() {
+  research.reset();
+  mining.reset();
   state.controller?.abort(); state.controller = null; setBusy(false); stopTracking();
   state.settings = null; state.prompts = [];
   $$("dialog").forEach((dialog) => { if (dialog.id !== "account-dialog" && dialog.open) dialog.close(); });
@@ -94,6 +115,7 @@ function clearPrivateViews() {
   $("#case-form").reset();
   $$("#chat-input, #old-password, #new-password").forEach((input) => { input.value = ""; });
   clearResults();
+  resetQuant(); state.snapshotPending = null;
   state.data = null; state.page = 0;
   candles?.setData([]); ema?.setData([]);
   text("#symbol-title", "尚未载入行情");
@@ -137,8 +159,11 @@ function setupChart() {
 }
 function renderChart(data, preserve = false) {
   if (!preserve) clearResults();
+  resetQuant();
   state.data = data;
   if (!chart) setupChart();
+  const priceFormat = chartPriceFormat(data);
+  candles.applyOptions({ priceFormat }); ema.applyOptions({ priceFormat });
   candles.setData(data.bars.map((b) => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })));
   ema.setData(data.bars.filter((b) => b.ema !== null).map((b) => ({ time: b.time, value: b.ema })));
   chart.timeScale().fitContent();
@@ -153,6 +178,155 @@ function renderChart(data, preserve = false) {
   text("#data-summary", source + " · " + data.bars.length + " 根");
   text("#source-note", new Date(last.time * 1000).toLocaleString("zh-CN"));
   text("#ohlc", "K1  O " + price(last.open) + "  H " + price(last.high) + "  L " + price(last.low) + "  C " + price(last.close));
+}
+function factorNumber(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  if (value !== 0 && Math.abs(value) < 0.0001) return value.toExponential(3);
+  return value.toLocaleString("en-US", { maximumFractionDigits: 5 });
+}
+function factorStatus(status) {
+  return ({ ready: "可用", warming_up: "样本积累中", unavailable: "暂不可用" })[status] || "暂不可用";
+}
+function resetQuant(message = "载入行情并登录后，计算当前快照的量化因子。") {
+  state.quantRequest++; state.quant = null; state.quantBusy = false;
+  $("#quant-button").disabled = state.busy;
+  text("#quant-state", "尚未计算");
+  text("#quant-button", "计算量化因子");
+  text("#quant-summary", "计算结果用于描述行情特征，不代表胜率或交易建议。");
+  text("#quant-meta", ""); $("#quant-provenance").classList.add("hidden"); $("#quant-provenance").open = false;
+  $("#quant-notes").replaceChildren();
+  $("#quant-factors").replaceChildren(el("p", message, "empty-copy"));
+  $("#quant-history").classList.add("hidden");
+  $("#quant-factor-select").replaceChildren(); $("#quant-history-rows").replaceChildren();
+  text("#quant-factor-description", ""); text("#quant-history-summary", "");
+  quantSeries?.setData([]);
+}
+async function ensureSnapshot(data, epoch) {
+  if (epoch !== state.epoch || state.data !== data) throw new Error("行情或账户已变更，请重新操作。");
+  if (data.snapshot_id) return data;
+  let pending = state.snapshotPending;
+  if (!pending || pending.data !== data || pending.epoch !== epoch) {
+    pending = { data, epoch, promise: json("/api/snapshots", "POST", { data: {
+      csv: data.csv || csvText(data), symbol: data.symbol, timeframe: data.timeframe, source: data.source === "demo" ? "demo" : "csv",
+    } }) };
+    state.snapshotPending = pending;
+  }
+  try {
+    const frozen = await pending.promise;
+    if (epoch !== state.epoch || state.data !== data) throw new Error("行情或账户已变更，请重新操作。");
+    Object.assign(data, frozen);
+    return data;
+  } finally { if (state.snapshotPending === pending) state.snapshotPending = null; }
+}
+function renderFactorHistory() {
+  const factor = state.quant?.factors?.find((item) => item.id === $("#quant-factor-select").value);
+  if (!factor) return;
+  const series = factor.series || [], valid = series.filter((item) => Number.isFinite(item.normalized));
+  text("#quant-factor-description", factor.description || factor.label || factor.id);
+  text("#quant-history-summary", valid.length
+    ? "显示标准化值 · " + valid.length + " / " + series.length + " 根可用。标准化仅使用每根 K 线及此前的数据。"
+    : factor.reason || "当前窗口没有可展示的标准化值。");
+  if (!quantChart) {
+    quantChart = LightweightCharts.createChart($("#quant-chart"), {
+      layout: { background: { color: "#111923" }, textColor: "#8295a9", fontSize: 10 },
+      grid: { vertLines: { color: "#1b2735" }, horzLines: { color: "#1b2735" } },
+      rightPriceScale: { borderColor: "#263445" },
+      timeScale: { borderColor: "#263445", timeVisible: true }, autoSize: true,
+    });
+    quantSeries = quantChart.addSeries(LightweightCharts.LineSeries, {
+      color: "#70b4ef", lineWidth: 2, priceLineVisible: false,
+      priceFormat: { type: "price", precision: 3, minMove: 0.001 },
+    });
+  }
+  quantSeries.setData(series.map((item) => Number.isFinite(item.normalized)
+    ? { time: item.time, value: item.normalized } : { time: item.time }));
+  quantChart.timeScale().fitContent();
+  $("#quant-history-rows").replaceChildren(...[...series].reverse().map((item) => {
+    const row = el("tr");
+    row.append(el("td", new Date(item.time * 1000).toLocaleString("zh-CN")),
+      el("td", factorNumber(item.value)), el("td", factorNumber(item.normalized)),
+      el("td", Number.isFinite(item.percentile) ? factorNumber(item.percentile) + "%" : "—"));
+    return row;
+  }));
+}
+function renderQuant(evidence, saved = false) {
+  state.quantRequest++; state.quantBusy = false; state.quant = evidence;
+  $("#quant-button").disabled = state.busy;
+  text("#quant-button", saved ? "查看已保存因子" : "计算量化因子");
+  const factors = evidence.factors || [], available = factors.filter((f) => f.status === "ready").length;
+  text("#quant-state", saved ? "随记录保存" : factors.length ? available + " / " + factors.length + " 项可用" : "暂不可用");
+  const identity = evidence.instrument;
+  const instrument = typeof identity === "string" ? identity : [identity?.symbol || state.data?.symbol,
+    identity?.chain, identity?.instrument_id || identity?.address].filter(Boolean).join(" / ");
+  const source = state.catalog.find((item) => item.id === evidence.source)?.label || ({ demo: "模拟示例", csv: "CSV 导入" })[evidence.source] || evidence.source || "—";
+  const normalization = evidence.normalization;
+  text("#quant-summary", [saved ? "已保存证据，未重新计算" : "当前行情快照", state.data?.symbol, source,
+    evidence.as_of ? "截至 " + new Date(evidence.as_of).toLocaleString("zh-CN") : "时间未提供", evidence.bar_count + " 根 K 线"].filter(Boolean).join(" · "));
+  const details = [instrument,
+    "因子版本 " + (evidence.feature_version || "—"), "快照 " + (evidence.snapshot_id || "—"),
+    "数据指纹 " + (evidence.dataset_hash || "—")];
+  if (normalization?.method) details.push("标准化：" + (normalization.method === "trailing_median_mad" ? "滚动中位数 / MAD" : normalization.method) + " · 窗口 " + normalization.window
+    + " · 至少 " + normalization.min_periods + " 个样本 · 截断 ±" + normalization.clip);
+  text("#quant-meta", details.filter(Boolean).join(" · "));
+  $("#quant-provenance").classList.remove("hidden");
+  const flags = evidence.quality_flags || [], notes = el("details", null, "quant-provenance");
+  notes.append(el("summary", "数据说明（" + flags.length + " 项）"), ...flags.map((flag) => el("p", flag.message, "quant-note")));
+  $("#quant-notes").replaceChildren(...(flags.length ? [notes] : []));
+  $("#quant-notes").append(el("p", "历史分位表示当前值在自身历史窗口中的位置，不代表胜率；因子值不构成买卖建议。", "muted"));
+  const cards = factors.map((factor) => {
+    const card = el("article", null, "quant-factor"), heading = el("div", null, "quant-factor-heading");
+    heading.append(el("h3", factor.label || factor.id), el("span", factorStatus(factor.status), "pill"));
+    card.append(heading, el("small", factor.id, "muted"));
+    const values = el("dl");
+    const unit = ({ log_return: "对数收益", ratio: "比率", score: "评分", log_volume: "对数量" })[factor.unit] || factor.unit;
+    for (const [label, value] of [["原始值" + (unit ? "（" + unit + "）" : ""), factorNumber(factor.value)],
+      ["标准化值", factorNumber(factor.normalized)], ["较上根变化", factorNumber(factor.change)],
+      ["历史分位", Number.isFinite(factor.percentile) ? factorNumber(factor.percentile) + "%" : "—"]]) {
+      values.append(el("dt", label), el("dd", value));
+    }
+    card.append(values);
+    if (factor.reason) card.append(el("p", factor.reason, "muted"));
+    const select = el("button", "查看历史 ↗", "quiet");
+    select.type = "button"; select.onclick = () => {
+      $("#quant-factor-select").value = factor.id; renderFactorHistory();
+      $("#quant-history").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    };
+    card.append(select); return card;
+  });
+  $("#quant-factors").replaceChildren(...(cards.length ? cards : [el("p", "当前快照暂无可用的量化因子。", "empty-copy")]));
+  $("#quant-history").classList.toggle("hidden", !factors.length);
+  $("#quant-factor-select").replaceChildren(...factors.map((factor) => {
+    const option = el("option", factor.id + " · " + (factor.label || factor.id)); option.value = factor.id; return option;
+  }));
+  $("#quant-factor-select").value = factors.find((factor) => factor.status === "ready")?.id || factors[0]?.id || "";
+  renderFactorHistory();
+}
+async function computeQuant() {
+  if (!requireUser() || state.busy || state.quantBusy) return;
+  if (!state.data) { toast("请先载入行情。", true); return; }
+  const saved = state.record?.result?.quant_evidence;
+  if (saved && saved.snapshot_id === state.data.snapshot_id && saved.dataset_hash === state.data.dataset_hash) {
+    renderQuant(saved, true); return;
+  }
+  const epoch = state.epoch, data = state.data, request = ++state.quantRequest;
+  state.quantBusy = true; $("#quant-button").disabled = true; text("#quant-state", "计算中…");
+  const current = () => epoch === state.epoch && data === state.data && request === state.quantRequest;
+  try {
+    await ensureSnapshot(data, epoch);
+    if (!current()) return;
+    const snapshot = data.snapshot_id;
+    const evidence = await json("/api/quant/signals", "POST", { snapshot_id: snapshot });
+    if (!current() || snapshot !== state.data?.snapshot_id) return;
+    if (evidence.snapshot_id !== snapshot || evidence.dataset_hash !== data.dataset_hash) throw new Error("因子与行情快照不一致，请重新载入行情。");
+    renderQuant(evidence);
+  } catch (error) {
+    if (current()) {
+      text("#quant-state", "计算未完成");
+      toast(error.status === 404 ? "行情快照已过期，请重新获取行情；历史记录中的因子仍可查看。" : error.message, true);
+    }
+  } finally {
+    if (current()) { state.quantBusy = false; $("#quant-button").disabled = state.busy; }
+  }
 }
 function download(name, content, type) {
   const link = document.createElement("a"), url = URL.createObjectURL(new Blob([content], { type }));
@@ -211,6 +385,8 @@ function renderChat() {
 function renderRecord(record) {
   state.record = record;
   const r = record.result, good = r.status === "complete", decision = r.stage2?.decision || {};
+  if (r.quant_evidence) renderQuant(r.quant_evidence, true);
+  else resetQuant("这份历史记录没有保存量化因子，尚未计算。点击计算可查看当前快照的新结果，不会改写原记录。");
   text("#analysis-state", good ? "分析完成" : "未完成");
   $("#analysis-summary").className = "empty-state has-result" + (good ? "" : " failed");
   $("#analysis-summary").replaceChildren(el("strong", good ? [display(decision.order_direction), display(decision.order_type)].join(" · ") : "分析未完成"),
@@ -263,12 +439,15 @@ async function analyze() {
   if (!requireUser() || state.busy || !state.data) return;
   if (!state.settings?.api_key_configured) { await openSettings(); toast("请先保存个人模型 API Key。", true); return; }
   const epoch = state.epoch, previous = state.record?.id, data = state.data;
-  const payload = data.snapshot_id ? { snapshot_id: data.snapshot_id } : { data: { csv: data.csv || csvText(data), symbol: data.symbol, timeframe: data.timeframe, source: data.source } };
-  if ($("#incremental").checked && previous) payload.previous_id = previous;
+  const incremental = $("#incremental").checked;
   clearResults(); setBusy(true); state.controller = new AbortController();
   text("#analysis-state", "分析中"); text("#analysis-hint", "连接个人模型服务…"); activateTab("stream");
   let result;
   try {
+    await ensureSnapshot(data, epoch);
+    if (epoch !== state.epoch || state.data !== data) return;
+    const payload = { snapshot_id: data.snapshot_id };
+    if (incremental && previous) payload.previous_id = previous;
     const response = await api("/api/analyze", "POST", payload, state.controller.signal);
     await consumeSSE(response, (event) => {
       if (epoch !== state.epoch) return;
@@ -287,7 +466,8 @@ async function analyze() {
   } catch (error) {
     if (epoch !== state.epoch) return;
     stopTracking(); text("#analysis-state", error.name === "AbortError" ? "已停止" : "分析中断");
-    toast(error.name === "AbortError" ? "已停止请求。已完成的阶段可在分析记录中查看。" : error.message, error.name !== "AbortError");
+    toast(error.name === "AbortError" ? "已停止请求。已完成的阶段可在分析记录中查看。"
+      : error.status === 404 ? "行情快照已过期，请重新获取行情；历史记录中的因子仍可查看。" : error.message, error.name !== "AbortError");
   } finally {
     if (epoch === state.epoch) { state.controller = null; setBusy(false); }
   }
@@ -306,10 +486,14 @@ function sourceChanged() {
   $("#market-timeframe").replaceChildren(...source.timeframes.map((v) => { const option = el("option", v); option.value = v; return option; }));
   $("#market-timeframe").value = source.timeframes.includes("15m") ? "15m" : source.timeframes[0];
   $("#exchange-field").classList.toggle("hidden", source.id !== "tradingview");
-  text("#source-description", source.id === "mt5" ? "请在已登录 MT5 的 Windows 电脑运行桥接程序，每 60 秒同步到当前账户，详见 README。" : source.id === "tushare" ? "需在个人设置中填写 Tushare Token；分钟行情依账户权限提供。" : source.id === "tradingview" ? "填写准确交易所与品种代码；匿名访问或账户权限可能限制行情。" : source.id === "yfinance" ? "例如 GC=F、BTC-USD、AAPL；期货行情可能延迟，1 分钟历史窗口较短。" : "A 股与期货行情受交易时段和数据源限制，空数据会明确提示。");
+  $("#instrument-id-field").classList.toggle("hidden", source.id !== "birdeye");
+  $("#market-instrument-id").required = source.id === "birdeye";
+  $("#market-instrument-id").value = source.instrument_id || "";
+  text("#source-description", source.id === "birdeye" ? "Solana 代币按完整合约地址获取行情；品种代码用于显示。请先在个人设置中填写 Birdeye API Key，数据范围受套餐权限限制。" : source.id === "mt5" ? "请在已登录 MT5 的 Windows 电脑运行桥接程序，每 60 秒同步到当前账户，详见 README。" : source.id === "tushare" ? "需在个人设置中填写 Tushare Token；分钟行情依账户权限提供。" : source.id === "tradingview" ? "填写准确交易所与品种代码；匿名访问或账户权限可能限制行情。" : source.id === "yfinance" ? "例如 GC=F、BTC-USD、AAPL；期货行情可能延迟，1 分钟历史窗口较短。" : "A 股与期货行情受交易时段和数据源限制，空数据会明确提示。");
 }
 async function refreshStatus() {
   const data = await json("/api/status");
+  if ((state.user?.id || null) !== (data.user?.id || null)) { state.epoch++; clearPrivateViews(); }
   state.user = data.user;
   text("#account-name", state.user?.username || "访客模式"); text("#avatar", state.user?.username.slice(0, 1).toUpperCase() || "访");
   text("#account-note", state.user ? "个人账户 · 数据独立" : "登录后使用个人模型");
@@ -354,6 +538,7 @@ const settingsGroups = [
     ["validation.disable_truncation_repair", "禁用截断 JSON 修复", "checkbox"],
   ]],
   ["数据源凭据", [
+    ["birdeye_api_key", "Birdeye API Key（Solana 行情）", "password"],
     ["tradingview_username", "TradingView 用户名（可选）", "text"],
     ["tradingview_password", "TradingView 密码（可选）", "password"],
     ["tushare_token", "Tushare Token", "password"], ["kline_adjust", "A 股复权方式", ["qfq", "hfq", "none"]],
@@ -370,6 +555,13 @@ function setPath(obj, path, value) {
   const parts = path.split("."), last = parts.pop(); let target = obj;
   for (const p of parts) target = target[p] ||= {};
   target[last] = value;
+}
+function validateProvider(base, key, clear) {
+  if (!state.settings?.api_key_configured || key || clear) return;
+  let changed;
+  try { changed = new URL(base).origin !== new URL(state.settings.base_url).origin; }
+  catch { throw new Error("请填写有效的 HTTPS Base URL。"); }
+  if (changed) throw new Error("更换模型服务域名时，请填写该服务的 API Key，或勾选清除旧凭据后保存。");
 }
 async function openSettings() {
   if (!requireUser()) return;
@@ -395,7 +587,7 @@ async function openSettings() {
       }
       label.append(input); grid.append(label);
       if (name === "model") {
-        const choices = el("datalist"), fetchModels = el("button", "检测连接并获取模型", "secondary small"), hint = el("small", "读取当前地址，空白 Key 使用已保存值；不会保存设置。", "muted");
+        const choices = el("datalist"), fetchModels = el("button", "检测连接并获取模型", "secondary small"), hint = el("small", "读取当前地址；同一服务空白 Key 使用已保存值，更换服务需重新填写；不会保存设置。", "muted");
         choices.id = "model-options"; input.setAttribute("list", choices.id);
         fetchModels.type = "button"; fetchModels.id = "fetch-models"; hint.setAttribute("role", "status");
         label.append(choices, fetchModels, hint);
@@ -404,6 +596,7 @@ async function openSettings() {
           const clear = $('#settings-form input[name="clear__api_key"]')?.checked;
           fetchModels.disabled = true; hint.textContent = "正在读取模型列表…"; choices.replaceChildren();
           try {
+            validateProvider(base, key, clear);
             const data = await json("/api/models", "POST", { settings: { base_url: base, api_key: key }, clear_secrets: clear ? ["api_key"] : [] });
             if (!input.isConnected) return;
             if (base !== $("#setting-base_url").value.trim() || key !== $("#setting-api_key").value.trim()) { hint.textContent = "连接设置已变更，请重新获取。"; return; }
@@ -466,6 +659,11 @@ async function showPrompts() {
 async function guard(action) {
   try { await action(); } catch (error) { toast(error.message, true); }
 }
+const research = initResearch({ $, $$, el, json, requireUser, toast, download,
+  getEpoch: () => state.epoch, getChart: () => state.data, freezeChart: ensureSnapshot });
+const mining = initMining({ $, $$, el, json, requireUser, toast, download,
+  getEpoch: () => state.epoch, getUser: () => state.user,
+  openResearch: async () => { mining.close(); await research.open(); } });
 
 $$("[data-close]").forEach((button) => button.onclick = () => button.closest("dialog").close());
 $$("[data-tab]").forEach((button) => button.onclick = () => activateTab(button.dataset.tab));
@@ -475,7 +673,9 @@ $$("[data-action]").forEach((button) => button.onclick = () => guard(async () =>
   if (action === "history") { state.page = 0; await showHistory(); }
   if (action === "experience") await showExperience();
   if (action === "prompts") await showPrompts();
-  if (action === "workspace") window.scrollTo({ top: 0, behavior: "smooth" });
+  if (action === "research") { mining.close(); await research.open(); }
+  if (action === "mining") { research.close(); await mining.open(); }
+  if (action === "workspace") { mining.close(); research.close(); window.scrollTo({ top: 0, behavior: "smooth" }); }
 }));
 $("#account-button").onclick = () => guard(async () => state.user ? openSettings() : openDialog("#account-dialog"));
 $("#account-form").onchange = () => { const register = new FormData($("#account-form")).get("mode") === "register"; $("#invite-field").classList.toggle("hidden", !register); $('#account-form input[name="password"]').autocomplete = register ? "new-password" : "current-password"; };
@@ -485,16 +685,15 @@ $("#account-form").onsubmit = async (event) => {
   try {
     await json(form.get("mode") === "register" ? "/api/register" : "/api/session", "POST",
       { username: form.get("username"), password: form.get("password"), invite_code: form.get("invite_code") || "" });
-    state.epoch++; clearPrivateViews(); renderChart(await json("/api/demo")); await refreshStatus();
+    state.epoch++; clearPrivateViews(); accountChannel?.postMessage("changed");
+    await refreshStatus(); renderChart(await json("/api/demo"));
     $("#account-dialog").close(); event.target.reset(); toast("已登录 " + state.user.username);
   } catch (error) { text("#account-error", error.message); } finally { button.disabled = false; }
 };
 $("#logout-button").onclick = () => guard(async () => {
   state.epoch++; state.controller?.abort(); state.controller = null; setBusy(false); stopTracking();
-  await json("/api/logout", "POST", {}); clearPrivateViews(); state.record = null; state.settings = null; state.prompts = [];
-  $$("#case-form textarea, #chat-input, #old-password, #new-password").forEach((input) => { input.value = ""; });
-  $("#settings-fields").replaceChildren(); $("#prompt-editor").value = ""; $("#history-list").replaceChildren(); $("#experience-list").replaceChildren();
-  renderChart(await json("/api/demo")); await refreshStatus(); toast("已退出登录。");
+  await json("/api/logout", "POST", {}); forgetAccount(); accountChannel?.postMessage("changed");
+  await refreshStatus(); renderChart(await json("/api/demo")); toast("已退出登录。");
 });
 $("#settings-logout").onclick = () => $("#logout-button").click();
 $("#settings-form").onsubmit = async (event) => {
@@ -505,7 +704,7 @@ $("#settings-form").onsubmit = async (event) => {
     setPath(changes, name, type === "checkbox" ? input.checked : type === "number" ? Number(input.value) : input.value.trim());
     if (event.target.elements.namedItem("clear__" + name)?.checked) clear.push(name);
   }
-  try { state.settings = await json("/api/settings", "PUT", { settings: changes, clear_secrets: clear }); stopTracking(); await refreshStatus(); $("#settings-dialog").close(); toast("个人设置已保存。"); }
+  try { validateProvider(changes.base_url, changes.api_key, clear.includes("api_key")); state.settings = await json("/api/settings", "PUT", { settings: changes, clear_secrets: clear }); stopTracking(); await refreshStatus(); $("#settings-dialog").close(); toast("个人设置已保存。"); }
   catch (error) { text("#settings-error", error.message); }
 };
 $("#provider-preset").onchange = (event) => {
@@ -519,12 +718,17 @@ $("#change-password").onclick = () => guard(async () => {
   $("#old-password").value = ""; $("#new-password").value = ""; toast("密码已修改，其他登录会话已注销。");
 });
 $("#source-select").onchange = sourceChanged;
-["#market-symbol", "#market-timeframe", "#market-count", "#market-exchange"].forEach((s) => $(s).onchange = stopTracking);
+["#market-symbol", "#market-timeframe", "#market-count", "#market-exchange", "#market-instrument-id"].forEach((s) => $(s).onchange = stopTracking);
 $("#market-form").onsubmit = (event) => {
   event.preventDefault();
   if (!requireUser() || state.busy) return;
   stopTracking();
-  guard(async () => { const form = new FormData(event.target); setBusy(true); try { await marketFetch({ source: form.get("source"), symbol: form.get("symbol").trim(), timeframe: form.get("timeframe"), exchange: form.get("exchange").trim() || "OANDA", count: Number(form.get("count")) }); } finally { setBusy(false); } });
+  guard(async () => {
+    const form = new FormData(event.target), request = { source: form.get("source"), symbol: form.get("symbol").trim(), timeframe: form.get("timeframe"), exchange: form.get("exchange").trim() || "OANDA", count: Number(form.get("count")) };
+    if (request.source === "birdeye") { request.instrument_id = form.get("instrument_id").trim(); request.chain = "solana"; }
+    const epoch = state.epoch; setBusy(true);
+    try { await marketFetch(request); } finally { if (epoch === state.epoch) setBusy(false); }
+  });
 };
 $("#demo-button").onclick = () => guard(async () => { stopTracking(); renderChart(await json("/api/demo")); });
 $("#import-button").onclick = () => { text("#import-error", ""); openDialog("#import-dialog"); };
@@ -542,6 +746,8 @@ $("#csv-export").onclick = () => { if (state.data) download("pa-agent-" + state.
 $("#fit-chart").onclick = () => chart?.timeScale().fitContent();
 $("#ema-toggle").onchange = (event) => ema?.applyOptions({ visible: event.target.checked });
 $("#analyze-button").onclick = analyze;
+$("#quant-button").onclick = computeQuant;
+$("#quant-factor-select").onchange = renderFactorHistory;
 $("#cancel-button").onclick = () => { stopTracking(); state.controller?.abort(); };
 $("#tracking").onchange = async (event) => {
   if (!event.target.checked) { stopTracking(); return; }
@@ -608,7 +814,15 @@ $("#prompt-reset").onclick = () => guard(async () => {
   delete settings.prompt_overrides[name]; await json("/api/settings", "PUT", { settings: { prompt_overrides: settings.prompt_overrides } });
   await showPrompts(); $("#prompt-select").value = name; $("#prompt-select").dispatchEvent(new Event("change")); toast("此提示词已恢复默认值。");
 });
-document.addEventListener("visibilitychange", () => { if (document.hidden && state.treeTimer) clearInterval(state.treeTimer); });
+if (accountChannel) accountChannel.onmessage = () => {
+  forgetAccount();
+  guard(async () => { await refreshStatus(); toast("账户已在其他页面更新，之前的输入和分析已清空。"); });
+};
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && state.treeTimer) clearInterval(state.treeTimer);
+  if (!document.hidden) guard(refreshStatus);
+});
+window.addEventListener("focus", () => guard(refreshStatus));
 window.addEventListener("beforeunload", () => state.controller?.abort());
 
 (async () => {
@@ -617,6 +831,7 @@ window.addEventListener("beforeunload", () => state.controller?.abort());
     state.catalog = sources.sources;
     $("#source-select").replaceChildren(...state.catalog.map((source) => { const option = el("option", source.label + (source.available ? "" : " · 未安装")); option.value = source.id; option.disabled = !source.available; return option; }));
     $("#source-select").value = state.catalog.find((s) => s.available)?.id || "";
-    sourceChanged(); renderChart(demo); await refreshStatus();
+    sourceChanged(); await refreshStatus(); renderChart(demo);
+    if (location.hash === "#mining") { research.close(); await mining.open(); }
   } catch (error) { text("#config-notice", "加载失败：" + error.message); $("#config-notice").classList.remove("hidden"); toast(error.message, true); }
 })();
