@@ -26,9 +26,17 @@ from dataclasses import dataclass
 
 from typing import Any
 
+from pa_agent.util.price_precision import price_text
+
 
 
 logger = logging.getLogger(__name__)
+
+
+def _price_detail(value: float) -> str:
+    """Preserve small nonzero price deltas in deterministic prompt evidence."""
+    return price_text(value) if 0 < abs(value) < 0.0001 else f"{value:.4f}"
+
 
 
 
@@ -528,7 +536,7 @@ def judge_market_chaos(frame: Any) -> NodeFill:
                 ema_flat = abs(slope) < thr
                 c1_desc = (
                     f"EMA斜率({'平坦✓' if ema_flat else '有方向✗'}"
-                    f",d={slope:.4f},阈值±{thr:.4f})"
+                    f",d={_price_detail(slope)},阈值±{_price_detail(thr)})"
                 )
     except (TypeError, ValueError):
         pass
@@ -736,12 +744,12 @@ def judge_direction(frame: Any) -> tuple[str, NodeFill]:
                     thr = 0.05 * float(atr14[0])
                 if d > thr:
                     s1 = 1
-                    s1_desc = f"EMA斜率:+1(d={d:.4f}>thr={thr:.4f})"
+                    s1_desc = f"EMA斜率:+1(d={_price_detail(d)}>thr={_price_detail(thr)})"
                 elif d < -thr:
                     s1 = -1
-                    s1_desc = f"EMA斜率:-1(d={d:.4f}<-thr={-thr:.4f})"
+                    s1_desc = f"EMA斜率:-1(d={_price_detail(d)}<-thr={_price_detail(-thr)})"
                 else:
-                    s1_desc = f"EMA斜率:0(d={d:.4f},死区±{thr:.4f})"
+                    s1_desc = f"EMA斜率:0(d={_price_detail(d)},死区±{_price_detail(thr)})"
     except (TypeError, ValueError):
         pass
 
@@ -777,12 +785,12 @@ def judge_direction(frame: Any) -> tuple[str, NodeFill]:
                     thr2 = 0.1 * float(atr14[0])
                 if diff > thr2:
                     s2 = 1
-                    s2_desc = f"收盘重心(加权):+1(diff={diff:.4f}>thr={thr2:.4f})"
+                    s2_desc = f"收盘重心(加权):+1(diff={_price_detail(diff)}>thr={_price_detail(thr2)})"
                 elif diff < -thr2:
                     s2 = -1
-                    s2_desc = f"收盘重心(加权):-1(diff={diff:.4f}<-thr={-thr2:.4f})"
+                    s2_desc = f"收盘重心(加权):-1(diff={_price_detail(diff)}<-thr={_price_detail(-thr2)})"
                 else:
-                    s2_desc = f"收盘重心(加权):0(diff={diff:.4f},死区±{thr2:.4f})"
+                    s2_desc = f"收盘重心(加权):0(diff={_price_detail(diff)},死区±{_price_detail(thr2)})"
     except (TypeError, ValueError):
         pass
 
@@ -919,15 +927,15 @@ def judge_direction(frame: Any) -> tuple[str, NodeFill]:
                 if diff_m > thr_m:
                     med_confirm = 1
                     med_confirm_desc = (
-                        f"中窗口重心(加权):+1(diff={diff_m:.4f}>thr={thr_m:.4f},W={W_med})"
+                        f"中窗口重心(加权):+1(diff={_price_detail(diff_m)}>thr={_price_detail(thr_m)},W={W_med})"
                     )
                 elif diff_m < -thr_m:
                     med_confirm = -1
                     med_confirm_desc = (
-                        f"中窗口重心(加权):-1(diff={diff_m:.4f}<-thr={-thr_m:.4f},W={W_med})"
+                        f"中窗口重心(加权):-1(diff={_price_detail(diff_m)}<-thr={_price_detail(-thr_m)},W={W_med})"
                     )
                 else:
-                    med_confirm_desc = f"中窗口重心(加权):0(diff={diff_m:.4f},W={W_med})"
+                    med_confirm_desc = f"中窗口重心(加权):0(diff={_price_detail(diff_m)},W={W_med})"
     except (TypeError, ValueError):
         pass
 
@@ -1094,12 +1102,12 @@ def _eval_always_in_gates(
                     thr = 0.05 * float(atr14[0])
                 if d > thr:
                     slope_sign = 1
-                    slope_desc = f"EMA斜率向上(d={d:.4f}>thr={thr:.4f})"
+                    slope_desc = f"EMA斜率向上(d={_price_detail(d)}>thr={_price_detail(thr)})"
                 elif d < -thr:
                     slope_sign = -1
-                    slope_desc = f"EMA斜率向下(d={d:.4f}<-thr={thr:.4f})"
+                    slope_desc = f"EMA斜率向下(d={_price_detail(d)}<-thr={_price_detail(thr)})"
                 else:
-                    slope_desc = f"EMA斜率平坦(d={d:.4f},死区±{thr:.4f})"
+                    slope_desc = f"EMA斜率平坦(d={_price_detail(d)},死区±{_price_detail(thr)})"
     except (TypeError, ValueError):
         pass
 

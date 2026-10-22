@@ -161,7 +161,6 @@ class TushareSource(DataSource):
             import tushare as ts
         except ImportError as exc:
             raise DataSourceTransientError("未安装 tushare，请执行: pip install tushare") from exc
-        ts.set_token(token)
         self._token = token
         self._connected = True
         logger.info("TushareSource connected")
@@ -232,7 +231,7 @@ class TushareSource(DataSource):
             token = getattr(getattr(self._settings, "tushare", None), "token", "")
             if str(token or "").strip():
                 return str(token).strip()
-        return (os.environ.get("TUSHARE_TOKEN") or "").strip()
+        return ""
 
     def _is_minute_timeframe(self) -> bool:
         return self._timeframe in _MINUTE_FREQ_BY_TIMEFRAME
@@ -246,8 +245,9 @@ class TushareSource(DataSource):
         try:
             df = ts.pro_bar(
                 ts_code=self._symbol,
+                api=ts.pro_api(self._token),
                 asset="E",
-                adj=os.environ.get("TUSHARE_ADJ", "qfq").strip() or "qfq",
+                adj=None if self._settings.general.kline_adjust == "none" else self._settings.general.kline_adjust,
                 freq="D",
                 start_date=start,
                 end_date=end,

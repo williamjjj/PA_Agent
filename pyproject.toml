@@ -4,74 +4,58 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pa-agent"
-version = "0.1.0"
-description = "Price Action AI assistant: MT5 kline data, two-stage LLM analysis (AGPL-3.0)"
+version = "0.2.0"
+description = "PA Agent Web: account-isolated price action analysis"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "AGPL-3.0-or-later" }
 authors = [{ name = "PA Agent Team" }]
 dependencies = [
     "fastapi>=0.115,<1",
     "uvicorn>=0.30,<1",
-    "ai[vercel]==0.8.0; python_version >= '3.12'",
-    "numpy>=1.26",
-    "pandas>=2.2",
-    "openai>=1.40",
-    "tiktoken>=0.7",
-    "jsonschema>=4.22",
-    "pydantic>=2.7",
+    "numpy>=1.26,<3",
+    "pandas>=2.2,<4",
+    "openai>=1.40,<4",
+    "tiktoken>=0.7,<1",
+    "jsonschema>=4.22,<5",
+    "pydantic>=2.7,<3",
     "cryptography>=42",
+    "sqlalchemy>=2.0,<3",
+    "psycopg[binary]>=3.2,<4",
+    "argon2-cffi>=23.1",
+    "httpx>=0.28,<1",
+    "yfinance>=0.2.54,<2",
+    "requests>=2.32,<3",
+    "akshare>=1.14,<2",
+    "baostock>=0.8,<1",
+    "tushare>=1.4,<2",
+    "tvdatafeed @ https://github.com/rongardF/tvdatafeed/archive/e6f6aaa7de439ac6e454d9b26d2760ded8dc4923.zip",
 ]
 
 [project.optional-dependencies]
-desktop = [
-    "PyQt6>=6.6",
-    "pyqtgraph>=0.13",
-    "MetaTrader5>=5.0; sys_platform == 'win32'",
-    "tvdatafeed @ git+https://github.com/rongardF/tvdatafeed.git",
-    "pywin32>=306; sys_platform == 'win32'",
-    "akshare>=1.14",
-    "baostock>=0.8",
-    "curl_cffi>=0.13",
-    "tushare>=1.4",
-    "cursor-sdk>=0.1.0",
-    "httpx[socks]>=0.27",
-]
-
-dev = [
-    "httpx>=0.28",
-    "pytest>=8",
-    "pytest-qt>=4.4",
-    "hypothesis>=6",
-    "ruff>=0.5",
-    "black>=24.4",
-]
+mt5-bridge = ["MetaTrader5>=5.0; sys_platform == 'win32'"]
+dev = ["pytest>=8", "hypothesis>=6", "ruff>=0.5"]
 
 [project.scripts]
 pa-agent = "pa_agent.main:main"
 
+[tool.vercel]
+entrypoint = "app:app"
+
 [tool.setuptools.packages.find]
 include = ["pa_agent*"]
 
-[tool.black]
-line-length = 100
-target-version = ["py311"]
-
 [tool.ruff]
 line-length = 100
-target-version = "py311"
-
-[tool.ruff.lint]
-extend-select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
-ignore = ["E501"]
+target-version = "py312"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
 markers = [
     "unit: unit-level tests",
-    "property: property-based tests (hypothesis)",
-    "integration: integration tests crossing module boundaries",
-    "e2e: end-to-end smoke tests",
-    "live: requires real API key via environment variable (never uses config/settings.json)",
+    "property: property-based tests",
+    "integration: integration tests",
+    "e2e: end-to-end tests",
+    "live: requires real API credentials",
 ]

@@ -4,7 +4,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from pa_agent.ai.decision_continuity import DEFAULT_STRUCTURE_FLIP_COOLDOWN_BARS
-from pa_agent.gui.chart_decision_overlay import enrich_decision_for_chart_overlay
+from pa_agent.web.presentation.chart_decision_overlay import enrich_decision_for_chart_overlay
 
 
 def _bar(close: float, *, high: float | None = None, low: float | None = None) -> SimpleNamespace:

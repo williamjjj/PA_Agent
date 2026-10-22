@@ -1,8 +1,12 @@
 """Infer minimum price increment from K-line OHLC precision."""
 from __future__ import annotations
 
+import math
 import re
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
+
+from pa_agent.util.price_precision import price_text
 
 
 def infer_price_tick_from_frame(kline_frame: Any) -> float | None:
@@ -18,19 +22,27 @@ def infer_price_tick_from_frame(kline_frame: Any) -> float | None:
                 value = float(getattr(bar, attr))
             except (TypeError, ValueError):
                 continue
-            text = f"{value:.12f}".rstrip("0")
-            if "." in text:
-                max_decimals = max(max_decimals, len(text.split(".")[1]))
+            if not math.isfinite(value) or value == 0:
+                continue
+            # Suppress binary-float noise while retaining the scale of small
+            # token quotes. The old six-place cap could exceed the price itself.
+            quoted = Decimal(format(value, ".12f" if abs(value) >= 1 else ".12g")).normalize()
+            decimals = max(0, -quoted.as_tuple().exponent)
+            if abs(value) >= 1:
+                decimals = min(decimals, 6)
+            max_decimals = max(max_decimals, decimals)
 
     if max_decimals <= 0:
         return 1.0
-    return 10 ** (-min(max_decimals, 6))
+    return 10 ** (-max_decimals)
 
 
 def round_to_tick(price: float, tick: float) -> float:
-    if tick <= 0:
+    if tick <= 0 or not math.isfinite(tick) or not math.isfinite(price):
         return price
-    return round(round(price / tick) * tick, 10)
+    step = Decimal(str(tick))
+    units = (Decimal(str(price)) / step).to_integral_value(rounding=ROUND_HALF_EVEN)
+    return float(units * step)
 
 
 def parse_k_seq(value: object) -> int | None:
@@ -145,7 +157,7 @@ def format_breakout_tick_hint(kline_frame: Any) -> str:
     tick = infer_price_tick_from_frame(kline_frame)
     if tick is None:
         return ""
-    tick_s = f"{tick:g}"
+    tick_s = price_text(tick)
     return (
         f"**突破单定价（程序推断最小跳动 ≈ {tick_s}）**：做多时 "
         f"`entry_price` 必须 **严格大于** `entry_basis_bar` 的 high，"

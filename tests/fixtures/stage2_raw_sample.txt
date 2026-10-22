@@ -1,0 +1,11 @@
+```json
+{
+  "decision": {
+    "order_type": "不下单",
+    "reasoning": "避免"在区间中部入场"，等待边界确认。"
+  },
+  "decision_trace": [
+    {"node_id": "10.3", "answer": "否", "reason": "没有足够的收益空间"}
+  ]
+}
+```

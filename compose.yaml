@@ -1,0 +1,84 @@
+name: pa-agent
+
+x-app: &app
+  image: ${PA_WEB_IMAGE:-pa-agent:local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  init: true
+  user: "10001:10001"
+  read_only: true
+  tmpfs:
+    - /tmp:size=256m,mode=1777
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  environment:
+    DATABASE_URL: postgresql+psycopg://pa_agent:${POSTGRES_PASSWORD:?Run python3 scripts/init_deploy_env.py first}@postgres:5432/pa_agent
+    PA_WEB_ENCRYPTION_KEY: ${PA_WEB_ENCRYPTION_KEY:?A stable Fernet key is required}
+    PA_WEB_INVITE_CODE: ${PA_WEB_INVITE_CODE:?An invitation code is required}
+    PA_WEB_REGISTRATION: "0"
+    PA_WEB_ADMIN_USERNAME: ${PA_WEB_ADMIN_USERNAME:-}
+    PA_WEB_ADMIN_PASSWORD: ${PA_WEB_ADMIN_PASSWORD:-}
+    PA_WEB_DATA_DIR: /tmp/pa-agent
+  depends_on:
+    postgres:
+      condition: service_healthy
+  stop_grace_period: 30s
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pa_agent
+      POSTGRES_USER: pa_agent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run python3 scripts/init_deploy_env.py first}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pa_agent -d pa_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  web:
+    <<: *app
+    command:
+      - python
+      - -m
+      - uvicorn
+      - app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - ${PA_WEB_TRUSTED_PROXIES:-127.0.0.1}
+    ports:
+      - "127.0.0.1:${PA_WEB_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, sys, urllib.request;
+          health=json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5));
+          status=json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/status', timeout=5));
+          sys.exit(0 if health.get('ok') is True and status.get('configured') is True else 1)
+      interval: 15s
+      timeout: 12s
+      retries: 5
+      start_period: 30s
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "pa_agent.web.mining_worker"]
+
+volumes:
+  postgres_data:

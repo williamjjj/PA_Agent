@@ -4,7 +4,7 @@
     "app.py": {
       "maxDuration": 240,
       "includeFiles": "{public/**,prompt_engineering/**}",
-      "excludeFiles": "{.venv/**,tests/**,docs/**,records/**,trade_records/**,experience/**,logs/**,config/**,qunyou/**,assets/**,tools/**}"
+      "excludeFiles": "{.venv/**,.pa-agent-web/**,tests/**,docs/**,records/**,trade_records/**,experience/**,logs/**,config/**,qunyou/**,assets/**,tools/**}"
     }
   }
 }

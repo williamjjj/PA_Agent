@@ -24,6 +24,7 @@ from pa_agent.ai.market_features import (
 from pa_agent.data.base import KlineFrame
 from pa_agent.data.datetime_ts import format_epoch_for_display
 from pa_agent.records.schema import AnalysisRecord
+from pa_agent.util.price_precision import price_text
 
 logger = logging.getLogger(__name__)
 
@@ -670,8 +671,8 @@ _NEXT_BAR_PREDICTION_INSTRUCTION = """\
 硬约束（违反则整体阶段二 JSON 校验失败）：
 
 1. probabilities 三个值均为 0–100 整数，三者之和必须落在 [99, 101]（容差 ±1，源于取整）。
-2. direction 必须等于 probabilities 中数值最大的键；并列最大时取 JSON 出现顺序中靠前的键
-   （即按 bullish → bearish → neutral 的字面顺序）。
+2. direction 必须是 probabilities 中数值最大的键；并列最大时保留已选中的最大概率方向。
+   方向缺失或不是最大值时，按 bullish → bearish → neutral 的固定顺序选取并列最大项。
 3. reasoning 长度 30–1500 字，简体中文，不写下单价格、不写止损止盈，仅讨论方向与概率依据。
 4. features_used 合法取值封闭列表（只能从下方选对应值，禁止自造字符串）：
    "stage1_diagnosis"、"kline_features"、"analysis_history"、"experience_library"、"stage2_decision"、"previous_prediction_summary"。
@@ -1847,6 +1848,12 @@ class PromptAssembler:
         text = str(raw).strip()
         if not text:
             return None
+        # A minus sign in an exponent is not the separator of a price range.
+        try:
+            value = float(text)
+            return value if math.isfinite(value) and value > 0 else None
+        except ValueError:
+            pass
         if "-" in text:
             parts = [p.strip() for p in text.split("-", 1)]
             try:
@@ -1930,12 +1937,12 @@ class PromptAssembler:
         ]
         if near_support is not None:
             lines.append(
-                f"- 价格靠近下方支撑 **{support_label}**（约 {near_support:.4f}）→ "
+                f"- 价格靠近下方支撑 **{support_label}**（约 {price_text(near_support, 4) if near_support < 1 else format(near_support, '.4f')}）→ "
                 "可评估 **做多限价单**（回撤至支撑买入）。"
             )
         if near_resist is not None:
             lines.append(
-                f"- 价格靠近上方阻力 **{resist_label}**（约 {near_resist:.4f}）→ "
+                f"- 价格靠近上方阻力 **{resist_label}**（约 {price_text(near_resist, 4) if near_resist < 1 else format(near_resist, '.4f')}）→ "
                 "可评估 **做空限价单**（反弹至阻力卖出）。"
             )
         if near_support is None and near_resist is None:
