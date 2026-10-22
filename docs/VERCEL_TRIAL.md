@@ -2,7 +2,8 @@
 
 本次选择 Vercel 托管网页/API，连接持久 PostgreSQL，使用各账户自己的模型
 和行情凭据。支持登录、PA 分析、量化因子与历史回测；不部署常驻挖掘 Worker。
-目前尚未确认本次版本的线上地址，以实际部署成功后的 URL 和检查结果为准。
+网页分支已成功部署 Preview；账户服务还需完成数据库与加密配置检查。
+部署状态 Ready 只说明发布完成，注册可用性以 `/api/status` 的结果为准。
 
 ## 1. 确认身份、项目与分支
 
@@ -46,6 +47,26 @@ Build Command、Output Directory 和 Install Command 覆盖项，让 Vercel 使�
 这次分支试用需要配置 **Preview** 环境，并在修改变量后重新部署。
 Production 环境独立配置；除非有意共用正式账户数据，Preview 应使用独立的
 数据库与密钥。不要设置 SQLite 或依赖 `PA_WEB_DATA_DIR` 在 Vercel 保存账户。
+
+### 注册选项不可点击
+
+打开当前部署的 `/api/status`，先看 `configured` 和 `registration_open`：
+
+| 返回状态 | 含义与下一步 |
+|---|---|
+| `configured: false` | 账户存储服务未就绪。检查 Preview 环境是否有正确的 `DATABASE_URL` 和有效的 `PA_WEB_ENCRYPTION_KEY`，以及数据库能否连接；单独开放注册不会修复存储配置 |
+| `configured: true, registration_open: false` | 存储配置检查已通过，但站点未开放注册。设置 `PA_WEB_INVITE_CODE` 使用邀请码注册，或按需设 `PA_WEB_REGISTRATION=1` 开放注册 |
+| 两项均为 `true` | 注册已开放，可以选择注册并提交账户信息；如使用邀请码，需输入正确邀请码 |
+
+不确定是否连接数据库时，先在项目 **Settings → Environment Variables** 中
+筛选 **Preview**，查看变量名称及适用分支即可，不必展示值。如果只有
+`POSTGRES_URL` 等供应商变量名，需要把其适用的 PostgreSQL 连接串安全配置
+为本应用读取的 `DATABASE_URL`。若未创建数据库，再到项目 Storage 或
+Marketplace 连接 PostgreSQL 并选择当前提供的免费计划。
+
+还应检查是否有 `codex/web-multiuser-vercel` 的分支级变量覆盖。修改变量后
+重新部署该分支，再打开**最新部署**的 Visit 链接或分支别名。旧部署的唯一
+URL 可能仍使用旧环境变量，刷新旧地址不会把新配置应用到旧部署。
 
 ## 3. 部署与检查
 

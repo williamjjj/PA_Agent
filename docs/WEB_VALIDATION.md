@@ -1,5 +1,35 @@
 # Web migration validation
 
+## Registration availability feedback — 2026-10-22
+
+The deployed Preview reported `configured: false` and `registration_open: false`;
+the owner confirmed that its Preview environment had no variables configured.
+The disabled registration option therefore reflects incomplete account storage
+configuration. The account dialog previously obscured the page-level explanation.
+It now shows the unavailable-service, closed-registration or unknown-status
+reason inside the dialog. An explicitly unconfigured service also disables auth
+submission; closing registration alone still permits existing-account login.
+Registration remains controlled by the existing server policy. Switching out of
+registration clears/hides the invitation field and restores password autocomplete.
+
+The existing accounts/auth-race/tab-identity suite passed **30 tests**. Browser
+plugin was unavailable, so installed Python Playwright and system Chromium tested
+an isolated local service at `http://127.0.0.1:18770`, with status-response fixtures
+and real registration/session requests. Desktop 1440×1000 and mobile 390×844 each
+passed **10 scenarios**, including configuration states, mode transitions, a
+deliberately failed status request, registration, login and logout. Page identity,
+nonblank rendering, absence of a framework overlay, readable screenshots and
+interaction results were checked. There were no page exceptions or unexpected
+console errors; the deliberately aborted request produced the expected network
+error. Screenshots were visually inspected; the temporary server was stopped.
+JavaScript syntax and whitespace checks passed. Evidence is outside the checkout
+under `/workspace/.cloud-setup/pa-registration-qa/` and
+`/workspace/.cloud-setup/logs/pa-registration-regression.log`.
+
+This UI change does not create a hosted database or configure Vercel variables.
+The owner must configure the Preview environment, redeploy, and check the new
+deployment's `/api/status`. See [the trial setup guide](VERCEL_TRIAL.md).
+
 ## Deployment preparation — 2026-10-22
 
 The uploaded Vercel notification reports that the Git commit author is not

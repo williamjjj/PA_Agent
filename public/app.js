@@ -6,7 +6,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const state = { user: null, settings: null, data: null, record: null, catalog: [], busy: false,
   controller: null, tracking: null, page: 0, epoch: 0, prompts: [], treeTimer: null,
-  quant: null, quantBusy: false, quantRequest: 0, snapshotPending: null };
+  quant: null, quantBusy: false, quantRequest: 0, snapshotPending: null, accountReady: null };
 let chart, candles, ema, priceLines = [], toastTimer, quantChart, quantSeries;
 const accountChannel = typeof BroadcastChannel === "function" ? new BroadcastChannel("pa-account") : null;
 const labels = {
@@ -491,8 +491,33 @@ function sourceChanged() {
   $("#market-instrument-id").value = source.instrument_id || "";
   text("#source-description", source.id === "birdeye" ? "Solana 代币按完整合约地址获取行情；品种代码用于显示。请先在个人设置中填写 Birdeye API Key，数据范围受套餐权限限制。" : source.id === "mt5" ? "请在已登录 MT5 的 Windows 电脑运行桥接程序，每 60 秒同步到当前账户，详见 README。" : source.id === "tushare" ? "需在个人设置中填写 Tushare Token；分钟行情依账户权限提供。" : source.id === "tradingview" ? "填写准确交易所与品种代码；匿名访问或账户权限可能限制行情。" : source.id === "yfinance" ? "例如 GC=F、BTC-USD、AAPL；期货行情可能延迟，1 分钟历史窗口较短。" : "A 股与期货行情受交易时段和数据源限制，空数据会明确提示。");
 }
+function syncAccountMode() {
+  const register = $('#account-form input[value="register"]').checked;
+  $("#invite-field").classList.toggle("hidden", !register);
+  $('#account-form input[name="password"]').autocomplete = register ? "new-password" : "current-password";
+}
+function showAccountAvailability(data) {
+  state.accountReady = typeof data?.configured === "boolean" ? data.configured : null;
+  const register = $('#account-form input[value="register"]');
+  register.disabled = state.accountReady !== true || !data.registration_open;
+  if (register.disabled && register.checked) {
+    $('#account-form input[value="login"]').checked = true;
+    $('#account-form input[name="invite_code"]').value = "";
+  }
+  syncAccountMode();
+  const message = state.accountReady === false
+    ? "账户服务尚未就绪，暂时无法登录或注册。" + (data.message || "请联系管理员完成服务配置。")
+    : state.accountReady === null ? "暂时无法确认账户服务和注册状态，请检查网络或稍后刷新；已有账户可尝试登录。"
+    : register.disabled ? "当前站点未开放新用户注册。已有账户仍可登录；如需新账户，请联系站点管理员。" : "";
+  text("#account-service-notice", message);
+  $("#account-service-notice").classList.toggle("hidden", !message);
+  $('#account-form button[type="submit"]').disabled = state.accountReady === false || $("#account-form").dataset.submitting === "true";
+}
 async function refreshStatus() {
-  const data = await json("/api/status");
+  const epoch = state.epoch;
+  let data;
+  try { data = await json("/api/status"); }
+  catch (error) { if (epoch === state.epoch) showAccountAvailability(null); throw error; }
   if ((state.user?.id || null) !== (data.user?.id || null)) { state.epoch++; clearPrivateViews(); }
   state.user = data.user;
   text("#account-name", state.user?.username || "访客模式"); text("#avatar", state.user?.username.slice(0, 1).toUpperCase() || "访");
@@ -500,7 +525,7 @@ async function refreshStatus() {
   $("#logout-button").classList.toggle("hidden", !state.user);
   $("#config-notice").classList.toggle("hidden", data.configured);
   text("#config-notice", data.message || "");
-  $('#account-form input[value="register"]').disabled = !data.registration_open;
+  showAccountAvailability(data);
   if (state.user) {
     state.settings = await json("/api/settings");
     text("#model-badge", state.settings.model + (state.settings.api_key_configured ? " · 已配置" : " · 缺少凭据"));
@@ -678,17 +703,19 @@ $$("[data-action]").forEach((button) => button.onclick = () => guard(async () =>
   if (action === "workspace") { mining.close(); research.close(); window.scrollTo({ top: 0, behavior: "smooth" }); }
 }));
 $("#account-button").onclick = () => guard(async () => state.user ? openSettings() : openDialog("#account-dialog"));
-$("#account-form").onchange = () => { const register = new FormData($("#account-form")).get("mode") === "register"; $("#invite-field").classList.toggle("hidden", !register); $('#account-form input[name="password"]').autocomplete = register ? "new-password" : "current-password"; };
+$("#account-form").onchange = syncAccountMode;
 $("#account-form").onsubmit = async (event) => {
   event.preventDefault(); text("#account-error", "");
   const form = new FormData(event.target), button = event.target.querySelector('button[type="submit"]'); button.disabled = true;
+  event.target.dataset.submitting = "true";
   try {
     await json(form.get("mode") === "register" ? "/api/register" : "/api/session", "POST",
       { username: form.get("username"), password: form.get("password"), invite_code: form.get("invite_code") || "" });
     state.epoch++; clearPrivateViews(); accountChannel?.postMessage("changed");
     await refreshStatus(); renderChart(await json("/api/demo"));
-    $("#account-dialog").close(); event.target.reset(); toast("已登录 " + state.user.username);
-  } catch (error) { text("#account-error", error.message); } finally { button.disabled = false; }
+    $("#account-dialog").close(); event.target.reset(); syncAccountMode(); toast("已登录 " + state.user.username);
+  } catch (error) { text("#account-error", error.message); }
+  finally { delete event.target.dataset.submitting; button.disabled = state.accountReady === false; }
 };
 $("#logout-button").onclick = () => guard(async () => {
   state.epoch++; state.controller?.abort(); state.controller = null; setBusy(false); stopTracking();
@@ -833,5 +860,5 @@ window.addEventListener("beforeunload", () => state.controller?.abort());
     $("#source-select").value = state.catalog.find((s) => s.available)?.id || "";
     sourceChanged(); await refreshStatus(); renderChart(demo);
     if (location.hash === "#mining") { research.close(); await mining.open(); }
-  } catch (error) { text("#config-notice", "加载失败：" + error.message); $("#config-notice").classList.remove("hidden"); toast(error.message, true); }
+  } catch (error) { if (state.accountReady === null) showAccountAvailability(null); text("#config-notice", "加载失败：" + error.message); $("#config-notice").classList.remove("hidden"); toast(error.message, true); }
 })();
