@@ -8,6 +8,7 @@ verify_logging_handlers() -> bool
 """
 from __future__ import annotations
 
+import copy
 import logging
 import logging.handlers
 from pathlib import Path
@@ -39,6 +40,146 @@ class MaskingFormatter(logging.Formatter):
 
     def set_api_key(self, new_key: str) -> None:
         self._api_key = new_key
+
+
+class DropRateLimitExhaustedFilter(logging.Filter):
+    """Drop console output for rate-limit give-up lines entirely.
+
+    When a provider exhausts its retries the console used to print a
+    neutral line ("本次分析暂未完成，请稍后重试。"). Even that is unwanted:
+    the analysis just fails silently for the user, and the full 429 detail
+    stays in the log file for diagnostics. Only the give-up line is
+    dropped - transient retry warnings keep their neutral wording.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001
+            return True
+        lowered = message.lower()
+        is_rate_limited = (
+            "限流重试" in message
+            or "触发限流" in message
+            or "insufficient_quota" in lowered
+            or "rate_limit_error" in lowered
+            or "inference exceeds tpm/rpm" in lowered
+        )
+        if not is_rate_limited:
+            return True
+        # Only silence the terminal "gave up" line, not the retry progress.
+        return "放弃本轮" not in message
+
+
+#: Modules whose output is internal spare-channel diagnostics (which model
+#: answered, prompt/completion counts, latency). The console window must show
+#: only the single neutral progress line, so these records are dropped there
+#: entirely; the log file keeps every detail for diagnosis.
+_SPARE_DIAGNOSTIC_LOGGERS = (
+    "pa_agent.ai.lite_fallback",
+    "pa_agent.ai.glm_backup",
+    "pa_agent.ai.glm_flash_lite",
+    "pa_agent.orchestrator.free_chat",
+)
+
+#: Message fragments that identify spare-channel diagnostics regardless of the
+#: logger name (e.g. after a module rename).
+_SPARE_DIAGNOSTIC_MARKERS = (
+    "lite spare channel",
+    "lite fallback",
+    "spare-channel",
+    "free-chat primary provider failed",
+    "free-chat spare-model",
+    "free-chat spare channel",
+    "free-chat follow-up answered",
+)
+
+
+class DropSpareChannelDiagnosticsFilter(logging.Filter):
+    """Keep spare-channel internals out of the user-facing console."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        if record.name in _SPARE_DIAGNOSTIC_LOGGERS:
+            return False
+        try:
+            message = record.getMessage().lower()
+        except Exception:  # noqa: BLE001
+            return True
+        return not any(marker in message for marker in _SPARE_DIAGNOSTIC_MARKERS)
+
+
+class ConsoleFormatter(MaskingFormatter):
+    """Neutral console progress; keep the original record for file diagnostics."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        message = record.getMessage()
+        is_backup = (
+            record.name == "pa_agent.ai.sensenova_fallback"
+            or "SenseNova free fallback" in message
+            or "switching to fallback model=" in message
+            or "provider fallback" in message
+            or "model=glm-4-flash " in message
+            or "model=glm-4-flash)" in message
+        )
+        # Rate-limit / quota messages must not reach the console: they are
+        # noise for the end user and can expose account state (insufficient
+        # quota). The file handler keeps the original text for diagnostics.
+        _lowered = message.lower()
+        is_rate_limited = (
+            "限流重试" in message
+            or "触发限流" in message
+            or "insufficient_quota" in _lowered
+            or "rate_limit_error" in _lowered
+            or "inference exceeds tpm/rpm" in _lowered
+            # Other gateways phrase the same condition differently:
+            #   "tpm exhausted" / "quota_exceeded_error" / bare "429".
+            or "quota_exceeded" in _lowered
+            or "tpm exhausted" in _lowered
+            or "rate limit" in _lowered
+            or "429" in _lowered
+        )
+        if not is_backup and not is_rate_limited:
+            return super().format(record)
+
+        # Never mutate a shared LogRecord: the file handler must retain details.
+        public_record = copy.copy(record)
+        public_record.name = "pa_agent.analysis"
+        # A transient provider hiccup that the fallback chain goes on to answer
+        # is not an error for the user: show it as ordinary progress instead of
+        # an ERROR line in the console window.
+        if public_record.levelno >= logging.ERROR:
+            public_record.levelno = logging.INFO
+            public_record.levelname = "INFO"
+        if is_rate_limited and not is_backup:
+            # Give-up lines are dropped upstream by DropRateLimitExhaustedFilter;
+            # anything reaching here is a transient retry notice.
+            text = "正在进行分析，请稍等。"
+        elif "empty content" in message:
+            text = "备用通道返回内容为空，本次请求未完成。"
+        elif "update failed" in message:
+            text = "备用通道切换失败，正在检查其他通道。"
+        elif "triggered" in message or "switching to fallback" in message:
+            text = "正在通过备用通道继续分析，请稍等。"
+        elif "已由免费模型接管" in message:
+            text = "备用通道分析完成，结果已通过校验。"
+        elif "exhausted" in message:
+            text = "备用通道多次尝试均未成功，本阶段分析失败。"
+        elif "aborted" in message:
+            text = "备用通道发生异常，本阶段分析未完成。"
+        elif "listing failed" in message:
+            text = "备用通道暂时无法连接，请稍后重试。"
+        elif "validation failed" in message:
+            text = "本次返回未通过校验，正在尝试其他通道。"
+        elif "miss:" in message:
+            text = "本次请求未成功，正在尝试其他通道，请稍等。"
+        else:
+            text = "正在进行分析，请稍等。"
+        public_record.msg = text
+        public_record.args = ()
+        public_record.exc_info = None
+        public_record.exc_text = None
+        public_record.stack_info = None
+        return super().format(public_record)
 
 
 # ── Public functions ──────────────────────────────────────────────────────────
@@ -89,7 +230,7 @@ def configure_logging(api_key: str = "") -> None:
 
     # Build formatters
     file_formatter = MaskingFormatter(_LOG_FORMAT, api_key=api_key)
-    console_formatter = MaskingFormatter(_LOG_FORMAT, api_key=api_key)
+    console_formatter = ConsoleFormatter(_LOG_FORMAT, api_key=api_key)
 
     # Track all active formatters so update_api_key can reach them
     _active_formatters.clear()
@@ -110,6 +251,10 @@ def configure_logging(api_key: str = "") -> None:
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(console_formatter)
+    # Never print the rate-limit give-up line to the user-facing console.
+    console_handler.addFilter(DropRateLimitExhaustedFilter())
+    # Nor any spare-channel internals (model name, token counts, latency).
+    console_handler.addFilter(DropSpareChannelDiagnosticsFilter())
 
     handlers: list[logging.Handler] = [file_handler, console_handler]
 

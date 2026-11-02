@@ -195,6 +195,15 @@ def validate_with_retry(
             )
         else:
             assistant_msg = {"role": "assistant", "content": content}
+        # A failed attempt can produce an empty content (model wrote nothing to
+        # the assistant channel). Appending it verbatim breaks providers that
+        # reject empty assistant turns and leaves an unusable hole in the audit
+        # trail. Substitute a short placeholder describing what happened.
+        if not str(assistant_msg.get("content") or "").strip():
+            assistant_msg = {
+                "role": "assistant",
+                "content": "(本轮未输出正文，程序已请求重试)",
+            }
         current_messages = current_messages + [
             assistant_msg,
             {"role": "user", "content": feedback},

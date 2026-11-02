@@ -19,8 +19,10 @@ from pa_agent.data.base import KlineBar, KlineFrame, IndicatorBundle
 
 
 def _ms(iso: str) -> int:
-    # Treat local ISO as UTC in tests; only deltas matter.
-    dt = datetime.strptime(iso, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    # Records store *local* wall-clock ISO strings (see _build_empty_record,
+    # which uses datetime.fromtimestamp -> naive local).  Parse the same way the
+    # production _parse_local_iso_ms does: naive -> .timestamp() uses local tz.
+    dt = datetime.strptime(iso, "%Y-%m-%d %H:%M:%S")
     return int(dt.timestamp() * 1000)
 
 
@@ -196,6 +198,7 @@ def test_apply_continuity_guard_reasoning_within_max_len():
     ctx = {
         "direction": "neutral",
         "always_in_branch": None,
+        "section_2_4_answer": "否",
         "has_previous_plan": False,
         "cooldown_bars": 3,
     }
@@ -217,6 +220,81 @@ def test_apply_continuity_guard_reasoning_within_max_len():
     assert reasoning.startswith("【程序连续性守卫】")
 
 
+def test_missing_section_2_4_does_not_block_directional_plan():
+    """Local-compatibility diagnosis has no gate_trace §2.4 — do not discard
+    a legal plan just because the section was never evaluated."""
+    ctx = {
+        "direction": "neutral",
+        "always_in_branch": None,
+        "section_2_4_answer": None,
+        "has_previous_plan": False,
+        "cooldown_bars": 3,
+    }
+    decision = {
+        "order_type": "限价单",
+        "order_direction": "做多",
+        "entry_price": 4028.155,
+        "stop_loss_price": 4025.17,
+        "take_profit_price": 4030.0,
+    }
+    assert continuity_violation_reason(ctx, decision) is None
+    stage2 = {"decision": decision, "terminal": {"outcome": "trade", "node_id": "11.2"}}
+    out = apply_continuity_guard(stage2, ctx)
+    assert out["decision"]["order_type"] == "限价单"
+    assert out["decision"]["entry_price"] == 4028.155
+
+
+def test_explicit_section_2_4_no_still_blocks_directional_plan():
+    """When §2.4 was evaluated and said 否, keep the original prohibition."""
+    ctx = {
+        "direction": "neutral",
+        "always_in_branch": None,
+        "section_2_4_answer": "否",
+        "has_previous_plan": False,
+        "cooldown_bars": 3,
+    }
+    decision = {
+        "order_type": "限价单",
+        "order_direction": "做多",
+        "entry_price": 4028.155,
+        "stop_loss_price": 4025.17,
+        "take_profit_price": 4030.0,
+    }
+    reason = continuity_violation_reason(ctx, decision)
+    assert reason is not None
+    assert "§2.4" in reason
+
+
+def test_apply_continuity_guard_records_reason_for_display():
+    """The guard's specific reason must reach the display layer, not be
+    swallowed by the generic fallback."""
+    ctx = {
+        "direction": "neutral",
+        "always_in_branch": None,
+        "section_2_4_answer": "否",
+        "has_previous_plan": False,
+        "cooldown_bars": 3,
+    }
+    stage2 = {
+        "decision": {
+            "order_type": "限价单",
+            "order_direction": "做多",
+            "entry_price": 4028.155,
+            "stop_loss_price": 4025.17,
+            "take_profit_price": 4030.0,
+            "reasoning": "test",
+        },
+        "terminal": {"outcome": "trade", "node_id": "11.2"},
+    }
+    out = apply_continuity_guard(stage2, ctx)
+    assert out["decision"]["order_type"] == "不下单"
+    assert out["local_plan_guard"] and "§2.4" in out["local_plan_guard"]
+    last = out["decision_adjustments"][-1]
+    assert last["check"] == "continuity"
+    assert last["from"] == "限价单"
+    assert "§2.4" in last["reason"]
+
+
 def test_render_prompt_mentions_neutral_ais():
     ctx = build_continuity_context(
         frame=_frame(),
@@ -235,7 +313,10 @@ def test_render_prompt_mentions_neutral_ais():
 
 def test_audit_relation_flip_label():
     prev = {
-        "record_time": "2026-06-30T14:24:00+00:00",
+        # Keep record_time near the frame snapshot (1 bar apart): a multi-day
+        # gap would exceed max_pending_bars and auto-cancel the resting limit,
+        # masking the flip classification this test is checking.
+        "record_time": "2026-06-30 14:20:00",
         "order_direction": "做空",
         "order_type": "限价单",
         "entry_price": "4196.79",
@@ -252,13 +333,13 @@ def test_audit_relation_flip_label():
 
 
 def test_bars_elapsed_between_parses_iso_t_separator():
-    prev = "2026-06-30T15:15:00.651+00:00"
+    prev = "2026-06-30T15:15:00.651"
     curr = _ms("2026-06-30 15:30:01")
     assert bars_elapsed_between(prev, curr, "15m") == 1
 
 
 def test_build_continuity_context_auto_cancels_after_3_bars_unfilled_limit():
-    prev_time = "2026-06-30T14:00:00+00:00"
+    prev_time = "2026-06-30 14:00:00"
     frame = _frame(snapshot_ts_local_ms=_ms("2026-06-30 14:25:00"))  # 5m * 5 bars
     ctx = build_continuity_context(
         frame=frame,
@@ -270,9 +351,11 @@ def test_build_continuity_context_auto_cancels_after_3_bars_unfilled_limit():
                 "decision": {
                     "order_direction": "做多",
                     "order_type": "限价单",
-                    "entry_price": 4180.0,  # not touched by _frame() low
+                    # Long limit must rest BELOW market to stay unfilled:
+                    # _frame() low=4190, so 4185 is genuinely untouched.
+                    "entry_price": 4185.0,
                     "stop_loss_price": 4170.0,
-                    "take_profit_price": 4210.0,
+                    "take_profit_price": 4230.0,
                 }
             },
         },
@@ -289,15 +372,15 @@ def test_build_continuity_context_auto_cancels_on_cycle_change_unfilled_limit():
         frame=frame,
         stage1_json={"direction": "bullish", "cycle_position": "trading_range"},
         previous_record={
-            "meta": {"timestamp_local_iso": "2026-06-30T14:00:00+00:00"},
+            "meta": {"timestamp_local_iso": "2026-06-30 14:00:00"},
             "stage1_diagnosis": {"direction": "bullish", "cycle_position": "trending_tr"},
             "stage2_decision": {
                 "decision": {
                     "order_direction": "做多",
                     "order_type": "限价单",
-                    "entry_price": 4180.0,
+                    "entry_price": 4185.0,
                     "stop_loss_price": 4170.0,
-                    "take_profit_price": 4210.0,
+                    "take_profit_price": 4230.0,
                 }
             },
         },
@@ -313,15 +396,17 @@ def test_build_continuity_context_auto_cancels_on_direction_change_unfilled_limi
         frame=frame,
         stage1_json={"direction": "bullish", "cycle_position": "trending_tr"},
         previous_record={
-            "meta": {"timestamp_local_iso": "2026-06-30T15:15:00.651+00:00"},
+            "meta": {"timestamp_local_iso": "2026-06-30T15:15:00.651"},
             "stage1_diagnosis": {"direction": "neutral", "cycle_position": "trending_tr"},
             "stage2_decision": {
                 "decision": {
                     "order_direction": "做多",
                     "order_type": "限价单",
-                    "entry_price": 4180.0,
+                    # Long limit must rest BELOW market: _frame() low=4190,
+                    # so a 7459 entry would already be "triggered".
+                    "entry_price": 4185.0,
                     "stop_loss_price": 4170.0,
-                    "take_profit_price": 4210.0,
+                    "take_profit_price": 4230.0,
                 }
             },
         },
@@ -338,7 +423,7 @@ def test_build_continuity_context_does_not_auto_cancel_when_limit_already_trigge
         frame=frame,
         stage1_json={"direction": "bullish", "cycle_position": "trending_tr"},
         previous_record={
-            "meta": {"timestamp_local_iso": "2026-06-30T14:00:00+00:00"},
+            "meta": {"timestamp_local_iso": "2026-06-30 14:00:00"},
             "stage1_diagnosis": {"direction": "bullish", "cycle_position": "trending_tr"},
             "stage2_decision": {
                 "decision": {

@@ -80,13 +80,14 @@ class AccountPrompts(PromptAssembler):
                 bar_candle_direction_label(bar), number(bar.volume),
                 number(frame.indicators.ema20[i]), number(frame.indicators.atr14[i]),
             ]))
-        lines.append(_KLINE_INDICATOR_NOTE)
+        lines.append(_KLINE_INDICATOR_NOTE.replace("\n", " "))
         return "\n".join(lines)
 
 
 class WebOrchestrator(TwoStageOrchestrator):
-    def _stream_chat_resilient(self, messages, *, stage_label, **kwargs):
-        return self._client.stream_chat(messages, **kwargs)
+    # The base web implementation filters orchestration-only arguments and
+    # retains this tenant's ModelClient. Never pass frame/free_lane to HTTP.
+    pass
 
 
 def redact(value, settings):

@@ -4,7 +4,7 @@ from __future__ import annotations
 from pa_agent.ai.response_extract import content_from_response, reasoning_from_response
 
 
-def test_reasoning_from_flat_cursor_shape() -> None:
+def test_reasoning_from_flat_shape() -> None:
     raw = {"content": "{}", "reasoning_content": "思考片段", "model": "auto"}
     assert reasoning_from_response(raw) == "思考片段"
 

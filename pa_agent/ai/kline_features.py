@@ -36,6 +36,8 @@ class KlineGeometryFeature:
     ema_gap_count: int
     breakout_prev: str
     follow_through_1_2: str
+    volume_ratio_20: float | None   # 本根成交量 / 之前20根均量；无量能数据时 None
+    volume_state: str               # 放量 / 常量 / 缩量 / 无数据
 
 
 def compute_kline_geometry_features(
@@ -130,6 +132,7 @@ def _feature_for_bar(
     ema_gap_count = _ema_gap_count(bars, idx, ema_values)
     breakout_prev = _breakout_prev_range(bars, idx)
     follow_through_1_2 = _follow_through_1_2(bars, idx)
+    vol_ratio, vol_state = _volume_ratio_state(bars, idx)
 
     return KlineGeometryFeature(
         seq=bar.seq,
@@ -148,6 +151,8 @@ def _feature_for_bar(
         ema_gap_count=ema_gap_count,
         breakout_prev=breakout_prev,
         follow_through_1_2=follow_through_1_2,
+        volume_ratio_20=vol_ratio,
+        volume_state=vol_state,
     )
 
 
@@ -315,6 +320,38 @@ def _overlap_ratio(bar: KlineBar, prev: KlineBar | None) -> float | None:
     if denominator <= 0:
         return None
     return overlap / denominator
+
+
+# ── Volume features ───────────────────────────────────────────────────────────
+# 仅作可选参考：用于判断"这根相对近期是放量还是缩量"。
+# 同一帧内可比，跨品种不可比（单位见 prompt 表注）。
+
+_VOLUME_LOOKBACK = 20
+_VOLUME_HIGH_RATIO = 1.5   # ≥1.5× 近20根均量 → 放量
+_VOLUME_LOW_RATIO = 0.7    # ≤0.7× 近20根均量 → 缩量
+
+
+def _volume_ratio_state(
+    bars: tuple[KlineBar, ...], idx: int
+) -> tuple[float | None, str]:
+    """Return (vol / mean(previous 20 bars' vol), 放量/常量/缩量/无数据)."""
+    bar = bars[idx]
+    if bar.volume is None or bar.volume <= 0:
+        return None, "无数据"
+    prev = [b.volume for b in bars[idx + 1 : idx + 1 + _VOLUME_LOOKBACK] if b.volume and b.volume > 0]
+    if not prev:
+        return None, "无数据"
+    mean_prev = sum(prev) / len(prev)
+    if mean_prev <= 0:
+        return None, "无数据"
+    ratio = bar.volume / mean_prev
+    if ratio >= _VOLUME_HIGH_RATIO:
+        state = "放量"
+    elif ratio <= _VOLUME_LOW_RATIO:
+        state = "缩量"
+    else:
+        state = "常量"
+    return round(ratio, 2), state
 
 
 def _round_or_none(value: float | None) -> float | None:

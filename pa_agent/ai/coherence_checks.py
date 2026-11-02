@@ -496,7 +496,11 @@ def validate_bar_by_bar_vs_features(
             continue
 
         # AI bar_type and program bar_type are overlapping classifications,
-        # not mutually exclusive. Only flag genuine bull/bear contradictions.
+        # not mutually exclusive. Flag only genuine contradictions:
+        #   1) bull vs bear opposites (always)
+        #   2) structural vs momentum mismatch (e.g. an inside bar claimed as
+        #      trend_bull) — only in strict mode and only when the pair is not
+        #      whitelisted in _COMPATIBLE_PAIRS.
         _ALL_BAR_TYPES = _STRUCTURAL_TYPES | _THRESHOLD_SENSITIVE_TYPES
         if declared in _ALL_BAR_TYPES and computed in _ALL_BAR_TYPES:
             _opposites = (
@@ -510,6 +514,20 @@ def validate_bar_by_bar_vs_features(
                     f"bar_by_bar_summary[{i}].bar_type={declared!r} contradicts "
                     f"program feature K{seq} bar_type={computed!r}"
                 )
+            elif strict and not (
+                (declared, computed) in _COMPATIBLE_PAIRS
+                or (computed, declared) in _COMPATIBLE_PAIRS
+            ):
+                _MOMENTUM_TYPES = frozenset({"trend_bull", "trend_bear"})
+                if (
+                    declared in _STRUCTURAL_TYPES and computed in _MOMENTUM_TYPES
+                ) or (
+                    computed in _STRUCTURAL_TYPES and declared in _MOMENTUM_TYPES
+                ):
+                    errors.append(
+                        f"bar_by_bar_summary[{i}].bar_type={declared!r} contradicts "
+                        f"program feature K{seq} bar_type={computed!r}"
+                    )
             continue
     return errors
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import json
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
     from pa_agent.ai.deepseek_client import DeepSeekClient
@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from pa_agent.records.pending_writer import PendingWriter
 
 from pa_agent.ai.deepseek_client import AIReply
+from pa_agent.ai.sensenova_fallback import NEUTRAL_PROGRESS_TEXT
 from pa_agent.records.schema import AnalysisRecord, FollowupTurn
 from pa_agent.util.threading import CancelToken
 from pa_agent.util.timefmt import now_local_ms
@@ -44,6 +45,29 @@ def _derive_record_id(record: AnalysisRecord) -> str:
 def _strip_reasoning(message: dict) -> dict:
     """Return a copy of *message* without the ``reasoning_content`` key."""
     return {k: v for k, v in message.items() if k != "reasoning_content"}
+
+
+def _accept_any_reply(reply: object) -> object:
+    """Free-chat has no JSON contract: any reply counts as a valid pass.
+
+    The two-stage pipeline validates stage JSON here; a follow-up answer is
+    plain prose, so the only thing worth rejecting is an empty reply (handled
+    by the caller after the call).
+    """
+    from pa_agent.ai.json_validator import Ok
+
+    return Ok({"content": getattr(reply, "content", "") or ""})
+
+
+def _progress(on_progress: "Callable[[str], None] | None", text: str) -> None:
+    """Best-effort progress line; a broken callback never breaks the answer."""
+    if on_progress is None:
+        return
+    try:
+        on_progress(text)
+    except Exception:  # noqa: BLE001
+        logger.debug("free-chat progress callback failed", exc_info=True)
+
 
 
 class FreeChatSession:
@@ -92,6 +116,13 @@ class FreeChatSession:
         self._ledger = ledger
         self._settings = settings
         self._kline_snapshot_fn = kline_snapshot_fn
+
+        # In-memory provider override once a layered fallback succeeded; never
+        # written back to settings.json.
+        self._active_provider: Any = None
+        #: Diagnostic marker: "free" / "provider" once a spare channel answered
+        #: this session, empty while the primary provider keeps working.
+        self.spare_channel_used: str = ""
 
         # Turn counter — incremented before each send so the first turn is 1.
         self._turn: int = 0
@@ -254,12 +285,24 @@ class FreeChatSession:
 
         return prefix
 
+    # ── Layered spare channels ────────────────────────────────────────────────
+
+    def _chat_with_spare_channels(self, messages, *, cancel_token,
+                                  on_reasoning_token=None, on_content_token=None,
+                                  on_progress=None, reasoning_effort=None):
+        """Web requests stay on the account's configured bounded client."""
+        return self._client.stream_chat(
+            messages, cancel_token=cancel_token, reasoning_effort=reasoning_effort,
+            on_reasoning_token=on_reasoning_token, on_content_token=on_content_token,
+        )
+
     def send(
         self,
         user_text: str,
         cancel_token: CancelToken,
         on_reasoning_token: "Callable[[str], None] | None" = None,
         on_content_token: "Callable[[str], None] | None" = None,
+        on_progress: "Callable[[str], None] | None" = None,
     ) -> AIReply:
         """Send *user_text* to the AI and return the reply.
 
@@ -325,10 +368,10 @@ class FreeChatSession:
         history_for_api.append({"role": "user", "content": user_content})
 
         # ── 2. Resolve reasoning_effort ───────────────────────────────────────
-        reasoning_effort = "high"
+        reasoning_effort = "low"
         if self._settings is not None:
             reasoning_effort = getattr(
-                self._settings.provider, "reasoning_effort", "high"
+                self._settings.provider, "reasoning_effort", "low"
             )
 
         # ── 3. Check cancellation before API call ─────────────────────────────
@@ -353,14 +396,15 @@ class FreeChatSession:
             self._pending_writer.append_followup(self._record_id, cancelled_turn)
             raise CancelledError("FreeChatSession.send cancelled before API call")
 
-        # ── 4. Call the API (streaming) ───────────────────────────────────────
+        # ── 4. Call the API (streaming, layered spare channels) ───────────────
         try:
-            reply = self._client.stream_chat(
+            reply = self._chat_with_spare_channels(
                 history_for_api,
+                cancel_token=cancel_token,
                 on_reasoning_token=on_reasoning_token,
                 on_content_token=on_content_token,
-                cancel_token=cancel_token,
                 reasoning_effort=reasoning_effort,
+                on_progress=on_progress,
             )
         except CancelledError:
             # Persist a cancelled turn and re-raise

@@ -31,7 +31,10 @@ logger = logging.getLogger(__name__)
 _KLINE_INDICATOR_NOTE = (
     "说明：下表仅含最近 N 根已收盘 K 线；几何特征亦基于此 N 根。"
     "EMA20/ATR14 由程序在更老缓冲 K 线上预热后重算，与外盘图表「全历史延续」"
-    "指标可能略有差异，勿逐点对比。"
+    "指标可能略有差异，勿逐点对比。\n"
+    "成交量列：为数据源原始单位（A 股为「股」，期货/外盘多为「手」或「张」），"
+    "**同一张表内各根之间可直接横向比较**（判放量/缩量），"
+    "**跨品种/跨市场量级不同，不可直接比较**；若与自身近期均量对比即可判断相对量能。"
 )
 
 # ── Language (both stages, thinking + final output) ───────────────────────────
@@ -113,9 +116,13 @@ _THINKING_CONTENT_OUTPUT_RULE = """
 """.strip()
 
 _STAGE1_TAIL_REMINDER = (
-    "【最后一步·必做】思考结束后，立即在 assistant 正文 `content` 输出完整阶段一裸 JSON。"
-    "思考请用简体中文并尽量简洁；`content` 不得为空。"
-    "禁止调用 exec/Python/写文件等工具。\n"
+    "【最后一步·必做，违反则整轮作废】\n"
+    "1. 现在立刻在 assistant 正文 `content` 写出完整阶段一 JSON。\n"
+    "2. `content` 第一个字符必须是 `{`，最后一个字符必须是 `}`。\n"
+    "3. **禁止**输出 ```json 或任何 ``` 围栏；**禁止**「以下是诊断结果」等前言后语。\n"
+    "4. **禁止**把 JSON 只写在思考区而让 `content` 为空——程序只读 `content`，"
+    "读不到会直接判定本轮失败并重试（白烧一次 API 调用）。\n"
+    "5. 禁止调用 exec/Python/写文件等工具。\n"
     "若 token 紧张：可缩短思考、将 bar_by_bar_summary 保持 5 根，"
     "但 gate_trace 与 gate_result 必须写在 JSON 末尾且不可省略。"
 ).strip()
@@ -166,13 +173,13 @@ _STAGE2_TAIL_REMINDER = (
 # ── Hardcoded output format reminders ─────────────────────────────────────────
 
 _STAGE1_OUTPUT_REMINDER = """
-请严格按照以下 JSON 格式输出诊断结果,不要输出任何其他内容。
-**硬约束：思考结束后，必须在 assistant 正文 `content` 输出下方完整阶段一 JSON；不得仅在思考区分析而让 `content` 为空。**
+请严格按照以下 JSON 结构输出诊断结果，不要输出任何其他内容。
+**硬约束（最高优先级）：思考结束后，必须在 assistant 正文 `content` 输出完整阶段一 JSON。不得仅在思考区分析而让 `content` 为空——程序只读 `content`，读不到就判定失败并重试。**
 **思考过程与 JSON 内所有说明性文字必须使用简体中文**（仅 JSON 键名与规定枚举除外）。
-禁止用 markdown 代码围栏（不要写 ```json 或结尾的 ```），只输出裸 JSON 对象。
+**禁止使用 markdown 代码围栏**（不要写 ```json，也不要写结尾的 ```）。`content` 必须以 `{` 开头、以 `}` 结尾，前后不得有任何文字。
 JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 
-```json
+【下面展示的是 JSON 结构骨架，不是让你照抄围栏——复制结构时不要带任何 ``` 标记】
 {
   "cycle_position": "spike|micro_channel|tight_channel|normal_channel|broad_channel|trending_tr|trading_range|extreme_tr|unknown",
   "alternative_cycle_position": null,
@@ -235,7 +242,7 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
   ],
   "gate_result": "proceed"
 }
-```
+【骨架结束】
 
 ## 阶段一闸门（二元决策树 §1–§2，必须执行）
 
@@ -270,12 +277,12 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 
 **node_overrides（可选，默认不输出）：**
 程序已为 §1.1/§2.3/§2.4 填充权威判定，**默认不要输出这些节点**。
-仅当你识别到程序规则**未捕捉到**的明确结构性依据时，在顶层 `node_overrides` 数组中提交覆盖：
-```json
+仅当你识别到程序规则**未捕捉到**的明确结构性依据时，在顶层 `node_overrides` 数组中提交覆盖，形如：
+
 "node_overrides": [
   {"node_id": "2.3", "answer": "是", "branch": "bearish", "override_reason": "近3根出现强势看跌反转，斜率窗口未捕捉到该结构突变"}
 ]
-```
+
 约束：§1.1/§9.1 为锁定节点不可覆盖；安全闸门（§10.3/§14）只能朝更保守方向；§2.3 answer/branch 须自洽（bullish/bearish↔是，neutral↔中性）；`answer` **禁止**写多头/空头/bullish/bearish，方向只写在 `branch`；不输出时请勿包含该字段。
 
 **§2.3 覆盖门槛（三项全部满足才允许提交）：**
@@ -339,14 +346,14 @@ diagnosis_confidence 分档说明（全系统统一阈值 **50**）:
 - 若市场处于 `extreme_tr` 或无法识别周期，允许填 `[]`。""".strip()
 
 _STAGE2_OUTPUT_CONTRACT = """
-请严格按照以下 JSON 格式输出决策结果，不要输出任何其他内容。
-**硬约束：思考结束后，必须在 assistant 正文 `content` 输出下方完整阶段二 JSON；不得仅在思考区分析而让 `content` 为空。**
+请严格按照以下 JSON 结构输出决策结果，不要输出任何其他内容。
+**硬约束（最高优先级）：思考结束后，必须在 assistant 正文 `content` 输出完整阶段二 JSON。不得仅在思考区分析而让 `content` 为空——程序只读 `content`，读不到就判定失败并重试。**
 **思考过程与 JSON 内所有说明性文字必须使用简体中文**（仅 JSON 键名与规定枚举除外）。
-禁止用 markdown 代码围栏（不要写 ```json 或结尾的 ```），只输出裸 JSON 对象。
+**禁止使用 markdown 代码围栏**（不要写 ```json，也不要写结尾的 ```）。`content` 必须以 `{` 开头、以 `}` 结尾，前后不得有任何文字。
 JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 重要规则：当 order_type 为“不下单”时，entry_price、take_profit_price、take_profit_price_2、stop_loss_price、order_direction 必须全部为 null。
 
-```json
+【下面展示的是 JSON 结构骨架，复制结构时不要带任何 ``` 标记】
 {
   "decision": {
     "order_direction": "做多|做空|null（禁止写 bearish/bullish/short/long）",
@@ -439,10 +446,10 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 - **例外（无需 2.3 节点）**：
   - 阶段一 direction=**neutral** → 阶段二 direction=bullish/bearish：程序判不了方向时 AI 阶段二识别出方向属于正常补充，校验器已豁免。不强制补写 2.3，但建议补（给本人看更清晰）。
   - 阶段二 将 direction 覆盖为 neutral 且周期属于震荡类（trading_range / extreme_tr / trending_tr）时。
-- 若阶段一 direction=bullish/bearish，而阶段二判断方向反转，**必须**在 decision_trace 中加入：
-  ```json
+- 若阶段一 direction=bullish/bearish，而阶段二判断方向反转，**必须**在 decision_trace 中加入形如下面的节点（不加围栏）：
+
   {"node_id": "2.3", "section": "方向重判", "question": "阶段二是否重新判定市场方向？", "answer": "是", "branch": "bullish", "reason": "说明为何方向改变的具体依据", "skipped": false, "bar_range": "由你填写"}
-  ```
+
   做空方向则 `"branch": "bearish"`。**`branch` 字段必须填写且值必须与 `diagnosis_summary.direction` 完全一致**（`bullish` 或 `bearish`）。
 - 其他情况若未加 2.3 节点而 direction 不同，校验器**必定报错**。最稳妥的做法：**让 diagnosis_summary.direction 直接沿用阶段一的 direction 值**，只在有充分依据时才覆盖。
 
@@ -467,12 +474,12 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
    - 例：触犯了宽通道追突破 → `{"node_id":"14","answer":"是","reason":"触犯：宽通道中追突破，放弃入场，order_type=不下单"}`
 
 **node_overrides（可选，默认不输出）：**
-仅当你识别到程序规则未捕捉到的明确结构性依据时，在顶层 `node_overrides` 数组中提交覆盖（如改变 §9.2/§9.3/§11 路由）：
-```json
+仅当你识别到程序规则未捕捉到的明确结构性依据时，在顶层 `node_overrides` 数组中提交覆盖（如改变 §9.2/§9.3/§11 路由），形如：
+
 "node_overrides": [
   {"node_id": "9.3", "answer": "否", "override_reason": "信号棒虽ATR比值略超2，但止损结构合理，程序未考虑此场景"}
 ]
-```
+
 约束：§9.1 为锁定节点不可覆盖；§11 可横向切换（限价/突破/市价），但「不下单」不能改为下单；不输出时请勿包含该字段。
 
 **交易者方程（10.3）规则：**
@@ -656,9 +663,8 @@ _NEXT_BAR_PREDICTION_INSTRUCTION = """\
 ## 下一根K线预测任务（阶段二附加输出，不影响下单决策）
 
 完成 decision / decision_trace / terminal 后，必须在阶段二 JSON 顶层追加键 `next_bar_prediction`，
-表达对下一根（尚未开始或正在形成）K线收盘后的方向预测：
+表达对下一根（尚未开始或正在形成）K线收盘后的方向预测，形如：
 
-```json
 "next_bar_prediction": {
   "direction": "bullish|bearish|neutral",
   "probabilities": {"bullish": 45, "bearish": 35, "neutral": 20},
@@ -666,7 +672,6 @@ _NEXT_BAR_PREDICTION_INSTRUCTION = """\
   "unpredictable": false,
   "features_used": ["stage1_diagnosis", "kline_features"]
 }
-```
 
 硬约束（违反则整体阶段二 JSON 校验失败）：
 
@@ -708,9 +713,8 @@ _NEXT_CYCLE_PREDICTION_INSTRUCTION = """\
 **禁止**用其改写 `decision` / 否决顺 `direction` 的合格方案。交易门控只认阶段一方向、Always In 与硬禁令。
 
 完成 next_bar_prediction 后，必须在阶段二 JSON 顶层追加键 `next_cycle_prediction`，
-表达对当前市场周期结束后、下一个市场周期的**粗粒度**判断：
+表达对当前市场周期结束后、下一个市场周期的**粗粒度**判断，形如：
 
-```json
 "next_cycle_prediction": {
   "cycle": "broad_channel",
   "direction": "bullish",
@@ -728,7 +732,6 @@ _NEXT_CYCLE_PREDICTION_INSTRUCTION = """\
   "unpredictable": false,
   "features_used": ["stage1_diagnosis", "kline_features"]
 }
-```
 
 市场周期枚举（cycle 字段的合法取值，共 8 个，不含 unknown）：
 spike | micro_channel | tight_channel | normal_channel | broad_channel | trending_tr | trading_range | extreme_tr
@@ -1002,8 +1005,8 @@ class PromptAssembler:
         shown = limit if limit is not None else len(frame.bars)
         lines = [
             f"（几何特征：最近 {shown} 根已收盘 K 线；「类型」= 单字段 bar_type，优先级 inside/outside > doji/trend/flat/other；多棒形态已用完整窗口计算）",
-            "序号 | 类型          | 实体比 | 上影比 | 下影比 | 收盘位置 | Range/ATR | EMA关系 | 与前棒重叠 | ii/iii | ioi | 微双 | 缺口 | EMA缺口数 | 近5突破 | 后续",
-            "-----+---------------+--------+--------+--------+----------+-----------+---------+------------+--------+-----+------+-------+-----------+---------+------",
+            "序号 | 类型          | 实体比 | 上影比 | 下影比 | 收盘位置 | Range/ATR | EMA关系 | 与前棒重叠 | ii/iii | ioi | 微双 | 缺口 | EMA缺口数 | 近5突破 | 后续 | 量比20 | 量能",
+            "-----+---------------+--------+--------+--------+----------+-----------+---------+------------+--------+-----+------+-------+-----------+---------+------+--------+------",
         ]
         for feat in compute_kline_geometry_features(frame, limit=limit):
             lines.append(
@@ -1021,7 +1024,9 @@ class PromptAssembler:
                 f"{feat.gap_bar:<5} | "
                 f"{feat.ema_gap_count:<9} | "
                 f"{feat.breakout_prev:<7} | "
-                f"{feat.follow_through_1_2}"
+                f"{feat.follow_through_1_2:<6} | "
+                f"{_fmt_feature(feat.volume_ratio_20):<6} | "
+                f"{feat.volume_state}"
             )
         lines.append(_KLINE_INDICATOR_NOTE)
         return "\n".join(lines)
@@ -1611,7 +1616,16 @@ class PromptAssembler:
                 stage1_reply_content,
             )
             chain = [dict(m) for m in stage1_messages]
-            chain.append({"role": "assistant", "content": assistant_content})
+            # stage1_messages already ends with the assistant turn (validate_with_retry
+            # appends it via append_assistant_turn). Appending another assistant
+            # message would produce two consecutive assistant turns, which breaks
+            # the chat alternation contract and some providers reject outright.
+            # Replace the trailing assistant content with the normalised JSON
+            # instead of duplicating it.
+            if chain and chain[-1].get("role") == "assistant":
+                chain[-1] = {"role": "assistant", "content": assistant_content}
+            else:
+                chain.append({"role": "assistant", "content": assistant_content})
             chain.append({"role": "user", "content": stage2_user_content})
             return chain
 

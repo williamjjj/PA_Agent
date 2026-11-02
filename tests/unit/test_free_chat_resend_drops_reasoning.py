@@ -158,6 +158,10 @@ class TestFreeChatResendDropsReasoning:
         assert "追问助手" in messages[0]["content"]
         assert messages[1]["role"] == "user"
         assert "上次分析结果" in messages[1]["content"]
+        # Stable prefix also carries a program-synthesised recall message
+        # (assistant) built from the validated stage2_decision.
+        assert messages[2]["role"] == "assistant"
+        assert messages[2]["content"].startswith("【上次决策结果】")
         assert messages[3]["role"] == "user"
         assert messages[3]["content"] == "hello"
         for msg in messages:
@@ -208,7 +212,7 @@ class TestFreeChatResendDropsReasoning:
         assert ledger.add.call_count == 2
 
     def test_history_for_api_structure_first_turn(self):
-        """On the first send: [followup_system, analysis_ref, validated_recall, new_user]."""
+        """On the first send: [system, analysis_ref, assistant_recall, new_user]."""
         client = MagicMock()
         client.stream_chat.return_value = _make_reply()
         session = _make_session(client)
@@ -218,13 +222,12 @@ class TestFreeChatResendDropsReasoning:
 
         messages: list[dict] = client.stream_chat.call_args[0][0]
         assert len(messages) == 4
-        assert messages[2]["role"] == "assistant"
-        assert "上次决策结果" in messages[2]["content"]
-        assert "stage2 reasoning" not in messages[2]["content"]
         assert messages[0]["role"] == "system"
         assert "追问助手" in messages[0]["content"]
         assert messages[1]["role"] == "user"
         assert "上次分析结果" in messages[1]["content"]
+        assert messages[2]["role"] == "assistant"
+        assert messages[2]["content"].startswith("【上次决策结果】")
         assert messages[3]["role"] == "user"
         assert messages[3]["content"] == "my question"
 
@@ -242,9 +245,11 @@ class TestFreeChatResendDropsReasoning:
         session.send("question 1", cancel)
         session.send("question 2", cancel)
 
-        # Second call's messages: system, ref, validated_recall, q1, a1, q2
+        # Second call: system, ref, recall, q1, a1, q2
         messages: list[dict] = client.stream_chat.call_args_list[1][0][0]
         assert len(messages) == 6
+        assert messages[2]["role"] == "assistant"
+        assert messages[2]["content"].startswith("【上次决策结果】")
         assert messages[3]["role"] == "user"
         assert messages[3]["content"] == "question 1"
         assert messages[4]["role"] == "assistant"

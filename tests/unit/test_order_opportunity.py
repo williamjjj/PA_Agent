@@ -32,9 +32,3 @@ def test_format_order_alert_message_includes_prices() -> None:
     assert "突破单" in text
     assert "2650.5" in text
     assert "决策" in text
-
-
-
-
-
-

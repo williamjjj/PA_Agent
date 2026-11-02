@@ -77,6 +77,9 @@ def test_stage2_normalizer_passes_breakout_price_check() -> None:
                 "entry_basis_extreme": "high",
                 "entry_price": 104.0,
                 "take_profit_price": 120.0,
+                # TP2 is mandatory for any order (prompt: 有下单时 tp 与 tp2 均必填);
+                # omitting it would trip validate_take_profit_2_geometry and the whole
+                # decision would be coerced to 不下单, masking the assertion below.
                 "take_profit_price_2": 130.0,
                 "stop_loss_price": 99.0,
                 "estimated_win_rate": 55,

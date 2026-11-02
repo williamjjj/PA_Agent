@@ -36,11 +36,31 @@ def test_tv_exchange_auto_preserved():
     assert normalize_gold_tv_exchange("OANDA") == "OANDA"
 
 
-def test_tv_forex_auto_probe_excludes_stock_and_crypto_venues():
+def test_tv_forex_auto_probe_tries_all_forex_presets():
+    """For gold, only venues listed in TV_GOLD_SYMBOL_BY_EXCHANGE are probed.
+
+    TV_EXCHANGE_PRESETS also carries equity/index venues (SP, NYSE, NASDAQ,
+    CBOT, CME_MINI, …) which never quote XAUUSD, so the plan must be exactly
+    the gold-capable subset — not "every preset minus A-share venues".
+    """
+    from pa_agent.data.market_defaults import (
+        TV_CRYPTO_EXCHANGES,
+        TV_EQUITY_EXCHANGES,
+        TV_GOLD_SYMBOL_BY_EXCHANGE,
+    )
+
     plan = tv_forex_auto_probe_plan("XAUUSD")
     exchanges = [ex for ex, _ in plan]
-    assert exchanges == ["OANDA", "PEPPERSTONE", "FOREXCOM", "FX", "TVC", "CAPITALCOM"]
-    assert set(exchanges).issubset(TV_EXCHANGE_PRESETS)
+
+    expected = [
+        ex
+        for ex in TV_EXCHANGE_PRESETS
+        if ex
+        and ex not in TV_EQUITY_EXCHANGES
+        and ex not in TV_CRYPTO_EXCHANGES
+        and ex in TV_GOLD_SYMBOL_BY_EXCHANGE
+    ]
+    assert exchanges == expected
     assert ("OANDA", "XAUUSD") in plan
     assert ("TVC", "GOLD") in plan
 
