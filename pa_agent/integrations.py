@@ -9,7 +9,7 @@ import sys
 
 
 def install_skills(target: str = "all") -> list[dict]:
-    from pa_agent.config.paths import PROJECT_ROOT
+    from pa_agent.config.paths import DATA_ROOT, PROJECT_ROOT
     from pa_agent.config.settings import load_settings
     provider = load_settings().provider
     buddy_profile = provider.harness_profiles.get("workbuddy", {})
@@ -31,6 +31,7 @@ def install_skills(target: str = "all") -> list[dict]:
     executable = Path(sys.executable).resolve()
     command = ([str(executable.with_name("pa-agent-cli.exe"))] if getattr(sys,"frozen",False)
                else [str(executable),"-m","pa_agent.cli"])
+    working_directory = DATA_ROOT if getattr(sys, "frozen", False) else PROJECT_ROOT
     results = []
     for name,home in destinations:
         if target not in ("all",name): continue
@@ -39,7 +40,7 @@ def install_skills(target: str = "all") -> list[dict]:
             continue
         destination = home/"skills/pa-agent"
         skill = (PROJECT_ROOT/"integrations/pa-agent/SKILL.md").read_bytes()
-        location = json.dumps({"command":command,"working_directory":str(PROJECT_ROOT)},
+        location = json.dumps({"command":command,"working_directory":str(working_directory)},
                               ensure_ascii=False,indent=2)
         unchanged = ((destination/"SKILL.md").is_file()
                      and (destination/"SKILL.md").read_bytes() == skill
