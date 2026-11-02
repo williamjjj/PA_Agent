@@ -14,6 +14,13 @@
 - 长单行预览保持 250000 字符上限；20 次追问工作线程结束后 Qt 子对象全部释放。
 - 超时、取消和进程错误不会泄露子进程 stderr；请求临时文件和子进程清理通过测试。
 - harness 切换保留各自配置；技能安装保留旧版本，重复安装不重复创建备份。
+- GitHub Windows 自动回归（提交 `f2d9c5c`）：1222 passed、1 skipped、7 deselected；[运行记录](https://github.com/williamjjj/PA_Agent/actions/runs/41503344879)。
+- GitHub Ubuntu 网页自动检查通过：[运行记录](https://github.com/williamjjj/PA_Agent/actions/runs/41501380340)。
+- 最终安装版 `doctor --check all`：Codex、WorkBuddy/CodeBuddy CLI、Hermes 均返回正确最小应答。
+- 安装器实际静默安装退出码 0，快捷方式和四个技能目录注册成功；已有 46 个历史文件复制后逐个核验 SHA-256。
+- 绿色 ZIP 解压后，在 PATH 中移除 Python、清除虚拟环境变量，因子、回测、公式搜索三个命令均成功。归档 CRC 和 EXE 哈希通过核验，归档不含个人数据目录。
+- 安装版 GUI 实际启动并记录 `Main window shown`。图形界面源码渲染与后台计算另行检查；未将浏览器工具启动失败计作网页点击验收通过。
+- 为避免本机 Windows 对安装目录的执行限制，本机 harness 调用记录指向工作区内独立的私有绿色副本。公开发行包保持无个人配置。
 
 网页合并另见网页分支的 `docs/MAIN_SYNC_20261103.md`。网页本地回归 1190 passed、19 skipped、7 deselected，流解析 4/4。
 

@@ -3,7 +3,7 @@ name: pa-agent
 description: 调用本机 PA Agent 获取价格行为分析、AlphaGPT 因果因子、历史回测和有预算的公式搜索。适用于用户要求使用 PA Agent 分析已收盘行情或 OHLCV 文件，不用于实盘下单。
 ---
 
-使用已安装的 `pa-agent-cli.exe`。在 Windows 中优先查找 `%LOCALAPPDATA%\Programs\PA Agent\pa-agent-cli.exe`，其次使用此技能目录中的 `location.json` 记录的本机入口；源码环境使用项目 Python 运行 `-m pa_agent.cli`。先运行 `doctor`，核实程序和 harness 入口；安装路径存在不能证明登录可用。
+使用此技能目录中 `location.json` 记录的本机入口和工作目录。没有记录时，在 Windows 中查找 `%LOCALAPPDATA%\Programs\PA Agent\pa-agent-cli.exe`；源码环境使用项目 Python 运行 `-m pa_agent.cli`。先运行 `doctor`，核实程序和 harness 入口；安装路径存在不能证明登录可用。Windows 的执行限制可能要求使用工作区内的绿色版入口，此时先从绿色版运行 `integrate --target all` 更新记录，不修改 harness 的全局权限。
 
 常用命令：
 

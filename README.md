@@ -25,6 +25,8 @@
 
 ## 本地增强版（1.68.1）
 
+[下载安装包与绿色版](https://github.com/williamjjj/PA_Agent/releases/tag/desktop-1.68.1-20261103) · [实测记录](docs/LOCAL_VALIDATION_20261103.md)
+
 此分支以 `williamjjj/PA_Agent` 的 `222badb`（1.68）为基础，并移植
 `codex/web-multiuser-vercel` 的 AlphaGPT 因果因子、历史回测和 CPU 公式搜索。
 
