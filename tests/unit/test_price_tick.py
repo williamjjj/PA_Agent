@@ -77,6 +77,7 @@ def test_stage2_normalizer_passes_breakout_price_check() -> None:
                 "entry_basis_extreme": "high",
                 "entry_price": 104.0,
                 "take_profit_price": 120.0,
+                "take_profit_price_2": 130.0,
                 "stop_loss_price": 99.0,
                 "estimated_win_rate": 55,
             },

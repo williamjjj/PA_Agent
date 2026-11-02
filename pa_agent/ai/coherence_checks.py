@@ -502,6 +502,8 @@ def validate_bar_by_bar_vs_features(
             _opposites = (
                 ("trend_bull", "trend_bear"),
                 ("outside_bull", "outside_bear"),
+                ("inside", "outside_bull"),
+                ("inside", "outside_bear"),
             )
             if (declared, computed) in _opposites or (computed, declared) in _opposites:
                 errors.append(

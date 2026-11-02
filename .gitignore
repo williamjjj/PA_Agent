@@ -87,3 +87,9 @@ docs/changelog/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Web account storage and secrets
+.pa-agent-web/
+.env
+.env.*
+!.env.example

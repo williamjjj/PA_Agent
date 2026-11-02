@@ -223,5 +223,8 @@ def test_structural_inside_outside_mismatch_still_errors_in_strict() -> None:
     stage1 = {
         "bar_by_bar_summary": [{"bar": "K1", "bar_type": "trend_bull", "reason": "x"}]
     }
+    # Shape and structure may overlap: an inside bar can also be bullish.
+    assert validate_bar_by_bar_vs_features(stage1, kline_frame=frame, strict=True) == []
+    stage1["bar_by_bar_summary"][0]["bar_type"] = "outside_bull"
     errs = validate_bar_by_bar_vs_features(stage1, kline_frame=frame, strict=True)
     assert any("contradicts" in e for e in errs)

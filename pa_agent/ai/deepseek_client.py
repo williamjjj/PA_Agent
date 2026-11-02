@@ -90,14 +90,7 @@ def _is_deepseek_model(model: str) -> bool:
 
 
 def _is_qclaw_openclaw_agent(settings: AIProviderSettings) -> bool:
-    """True when requests go through QClaw's public-gateway OpenClaw Agent."""
-    from pa_agent.ai.cursor_connector import is_openclaw_cs_model
-    from pa_agent.ai.qclaw_connector import detect_qclaw, is_openclaw_model
-
-    if not detect_qclaw():
-        return False
-    model = settings.model or ""
-    return is_openclaw_model(model) or is_openclaw_cs_model(model)
+    return False
 
 
 def _openclaw_agent_request_extra(settings: AIProviderSettings) -> dict[str, Any]:
@@ -108,10 +101,7 @@ def _openclaw_agent_request_extra(settings: AIProviderSettings) -> dict[str, Any
 
 
 def _is_workbuddy_agent(settings: AIProviderSettings) -> bool:
-    """True when requests go through WorkBuddy's model route."""
-    from pa_agent.ai.workbuddy_connector import is_workbuddy_route
-
-    return is_workbuddy_route(settings)
+    return False
 
 
 def _is_openclaw_agent_model(model: str) -> bool:
@@ -163,11 +153,6 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
 
 
 def _effective_api_model(settings: AIProviderSettings) -> str:
-    """Model id sent to the upstream API (resolve provider aliases)."""
-    if _is_workbuddy_agent(settings):
-        from pa_agent.ai.workbuddy_connector import resolve_workbuddy_api_model
-
-        return resolve_workbuddy_api_model(settings.model)
     return settings.model
 
 
@@ -411,15 +396,15 @@ def _resolve_thinking_params(
             return extra_body, None
 
     if _is_deepseek_native(settings.base_url) or _is_deepseek_model(model):
-        # DeepSeek v4+ requires thinking.type=adaptive + output_config.effort;
-        # the old "enabled"/"disabled" values are no longer accepted.
-        # Also covers DeepSeek models proxied through non-native gateways (e.g. QClaw).
+        # Chat Completions uses enabled/disabled and reasoning_effort. Do not
+        # mix in the Anthropic-format adaptive/output_config parameters.
+        # https://api-docs.deepseek.com/guides/thinking_mode/
         if _thinking:
             extra_body: dict[str, Any] = {
-                "thinking": {"type": "adaptive"},
-                "output_config": {"effort": _adaptive_output_effort(_effort)},
+                "thinking": {"type": "enabled"},
             }
-            return extra_body, _effort or "medium"
+            effort = _adaptive_output_effort(_effort)
+            return extra_body, "high" if effort == "medium" else effort
         else:
             extra_body = {
                 "thinking": {"type": "disabled"},
@@ -696,26 +681,6 @@ class DeepSeekClient:
         """
         if cancel_token is not None and cancel_token.is_set():
             raise CancelledError("Request cancelled before API call")
-
-        from pa_agent.ai.cursor_connector import is_openclaw_cs_model
-        from pa_agent.ai.qoder_connector import is_openclaw_qc_model
-        from pa_agent.ai.trae_connector import is_openclaw_twc_model
-
-        if is_openclaw_cs_model(self._settings.model):
-            raise RuntimeError(
-                "模型 openclaw_cs 必须使用 Cursor SDK 路由，但当前仍在使用 DeepSeekClient。"
-                "请在「AI 模型」设置中重新保存，或重启应用后再分析。"
-            )
-        if is_openclaw_twc_model(self._settings.model):
-            raise RuntimeError(
-                "模型 openclaw_twc 必须使用 TRAE Work CN 路由，但当前仍在使用 DeepSeekClient。"
-                "请在「AI 模型」设置中重新保存，或重启应用后再分析。"
-            )
-        if is_openclaw_qc_model(self._settings.model):
-            raise RuntimeError(
-                "模型 openclaw_qc 必须使用 Qoder CN 路由，但当前仍在使用 DeepSeekClient。"
-                "请在「AI 模型」设置中重新保存，或重启应用后再分析。"
-            )
 
         extra_body, _effort = _resolve_thinking_params(
             self._settings, thinking=thinking, reasoning_effort=reasoning_effort

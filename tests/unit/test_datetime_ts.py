@@ -47,13 +47,9 @@ def test_format_epoch_for_display_no_local_shift():
     assert format_epoch_for_display(1_718_454_600, short=False) == "2024-06-15 12:30:00"
 
 
-def test_naive_local_to_utc_uses_host_offset():
-  # 2024-06-15 20:30 in UTC+8 == 2024-06-15 12:30 UTC
-    import time as _time
-
-    if _time.timezone == 0 and not _time.daylight:
-        pytest.skip("host is UTC")
-
+def test_naive_local_to_utc_uses_host_offset(monkeypatch):
+    # Isolate the local-time fixture from whichever timezone CI runs in.
+    monkeypatch.setattr("pa_agent.data.datetime_ts._time.timezone", -8 * 3600)
     local = datetime(2024, 6, 15, 20, 30, 0)
     utc = naive_local_to_utc(local)
     assert utc.tzinfo == timezone.utc

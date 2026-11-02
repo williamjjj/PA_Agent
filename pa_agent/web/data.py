@@ -20,23 +20,25 @@ MAX_BODY = 600_000
 class ImportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     csv: str = Field(min_length=1, max_length=500_000)
-    symbol: str = Field(default="XAUUSD", pattern=r"^[A-Za-z0-9._:/-]{1,24}$")
-    timeframe: Literal["1m", "5m", "15m", "30m", "1h", "4h", "1d"] = "15m"
+    symbol: str = Field(default="XAUUSD", pattern=r"^[A-Za-z0-9._:=^/-]{1,24}$")
+    timeframe: Literal["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"] = "15m"
     source: Literal["csv", "demo"] = "csv"
 
 
 def parse_csv(data: ImportRequest) -> KlineFrame:
     reader = csv.DictReader(io.StringIO(data.csv.lstrip("\ufeff")))
     required = {"time", "open", "high", "low", "close", "volume"}
-    if not reader.fieldnames or set(reader.fieldnames) != required:
+    if not reader.fieldnames or len(reader.fieldnames) != 6 or set(reader.fieldnames) != required:
         raise ValueError("CSV 必须包含且仅包含 time,open,high,low,close,volume 六列。")
     bars = []
     previous = 0.0
-    seconds = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400}[data.timeframe]
+    seconds = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400, "1w": 604800, "1M": 0}[data.timeframe]
     for index, row in enumerate(reader, 2):
         if len(bars) >= 500:
             raise ValueError("最多导入 500 根 K 线。")
         try:
+            if None in row or any(v is None for v in row.values()):
+                raise ValueError
             raw_time = row["time"]
             try:
                 ts = float(raw_time)
@@ -50,7 +52,11 @@ def parse_csv(data: ImportRequest) -> KlineFrame:
                 raise ValueError
             if not 0 < l <= min(o, c) <= max(o, c) <= h <= 1e12 or not 0 <= v <= 1e18:
                 raise ValueError
-            if ts <= previous or ts + seconds > time.time():
+            end = ts + seconds
+            if data.timeframe == "1M":
+                dt = datetime.fromtimestamp(ts, timezone.utc)
+                end = dt.replace(year=dt.year + (dt.month == 12), month=dt.month % 12 + 1, day=1).timestamp()
+            if ts <= previous or end > time.time():
                 raise ValueError
         except (ValueError, TypeError, KeyError, OverflowError):
             raise ValueError(f"第 {index} 行无效：请检查价格范围、成交量和时间；时间须升序且不重复，只接受已收盘 K 线。") from None
