@@ -48,6 +48,16 @@ def test_cancel_terminates_child(tmp_path,monkeypatch):
     finally: timer.join()
 
 
+def test_parent_exit_cleans_descendant_inherited_file_handles(tmp_path, monkeypatch):
+    client = fake_client(tmp_path, monkeypatch,
+        "import subprocess,sys,json\n"
+        "subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],"
+        "stdin=sys.stdin,stdout=sys.stdout,stderr=sys.stderr)\n"
+        "print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'done'}}),flush=True)\n")
+    assert client.chat([]).content == "done"
+    assert not list((tmp_path / 'harness-work').iterdir())
+
+
 def test_nonzero_exit_never_echoes_secret_stderr(tmp_path,monkeypatch):
     client=fake_client(tmp_path,monkeypatch,"import sys\nsys.stderr.write('SECRET-TEST-VALUE')\nsys.exit(4)")
     with pytest.raises(RuntimeError) as err: client.chat([])

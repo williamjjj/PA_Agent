@@ -20,7 +20,7 @@ dependencies = [
     "jsonschema>=4.22",
     "pydantic>=2.7",
     "MetaTrader5>=5.0; sys_platform == 'win32'",
-    "tvdatafeed @ git+https://github.com/rongardF/tvdatafeed.git",
+    "tvdatafeed @ git+https://github.com/rongardF/tvdatafeed.git@e6f6aaa7de439ac6e454d9b26d2760ded8dc4923",
     "cryptography>=42",
     "pywin32>=306; sys_platform == 'win32'",
     "akshare>=1.14",

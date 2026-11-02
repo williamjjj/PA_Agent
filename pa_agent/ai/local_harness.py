@@ -169,8 +169,21 @@ class _WindowsJob:
 
     def close(self) -> None:
         if self.handle is not None:
-            self.handle.Close()
-            self.handle = None
+            import win32job
+            try:
+                # Termination is asynchronous on Windows. Wait for descendants
+                # to release inherited stdin/files before deleting the spool.
+                win32job.TerminateJobObject(self.handle, 1)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    info = win32job.QueryInformationJobObject(
+                        self.handle, win32job.JobObjectBasicAccountingInformation)
+                    if not info["ActiveProcesses"]:
+                        break
+                    time.sleep(.02)
+            finally:
+                self.handle.Close()
+                self.handle = None
 
 
 def _terminate(process: subprocess.Popen, job: _WindowsJob | None) -> None:
