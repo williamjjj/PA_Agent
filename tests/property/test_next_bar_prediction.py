@@ -5,11 +5,12 @@ Covers correctness properties P1–P7 from design.md.
 from __future__ import annotations
 
 import copy
-from hypothesis import given, settings as h_settings, assume
+import pytest
+from hypothesis import given, settings as h_settings, assume, example
 from hypothesis import strategies as st
 
 from pa_agent.ai.json_validator import JsonValidator
-from pa_agent.ai.stage2_normalizer import _normalize_next_bar_prediction
+from pa_agent.ai.stage2_normalizer import _normalize_next_bar_prediction, normalize_stage2
 
 
 # ── Strategies ────────────────────────────────────────────────────────────────
@@ -110,8 +111,11 @@ def test_p1_probabilities_valid_after_normalize(pred: dict):
 
 @given(pred=_prediction_dict)
 @h_settings(max_examples=200)
+@example(pred={"direction": "bearish", "probabilities": {}})
+@example(pred={"direction": "bearish", "probabilities": {"bullish": 40, "bearish": 40, "neutral": 20}})
 def test_p2_direction_equals_argmax(pred: dict):
-    """After normalization, direction must equal argmax of probabilities."""
+    """Preserve a model-selected maximum; otherwise choose the first maximum."""
+    model_direction = str(pred.get("direction") or "").strip().lower()
     _normalize_next_bar_prediction(pred)
     if pred.get("unpredictable"):
         return
@@ -119,12 +123,54 @@ def test_p2_direction_equals_argmax(pred: dict):
     if not isinstance(probs, dict):
         return
     direction = pred.get("direction")
-    if direction is None:
-        return
     order = ("bullish", "bearish", "neutral")
     max_val = max(probs[k] for k in order)
-    expected = next(k for k in order if probs[k] == max_val)
+    winners = [k for k in order if probs[k] == max_val]
+    expected = model_direction if model_direction in winners else winners[0]
     assert direction == expected, f"direction={direction}, expected={expected}"
+
+
+@pytest.mark.parametrize("probabilities,direction,expected", [
+    ({"bullish": 40, "bearish": 40, "neutral": 20}, "bearish", "bearish"),
+    ({"bullish": 20, "bearish": 40, "neutral": 40}, "neutral", "neutral"),
+    ({"bullish": 40, "bearish": 20, "neutral": 40}, "neutral", "neutral"),
+    ({"bullish": 33, "bearish": 33, "neutral": 33}, "neutral", "neutral"),
+    ({"bullish": 40, "bearish": 40, "neutral": 20}, "neutral", "bullish"),
+    ({"bullish": 20, "bearish": 40, "neutral": 40}, None, "bearish"),
+    ({"bullish": 20, "bearish": 60, "neutral": 20}, "bullish", "bearish"),
+])
+def test_normalized_maximum_agrees_with_validator(probabilities, direction, expected):
+    pred = {"direction": direction, "probabilities": probabilities}
+    _normalize_next_bar_prediction(pred)
+    assert pred["direction"] == expected
+    assert JsonValidator._check_next_bar_prediction({"next_bar_prediction": pred}) == []
+    # A non-maximum must still fail, including when the maximum is tied.
+    loser = next((key for key, value in probabilities.items() if value < max(probabilities.values())), None)
+    if loser:
+        pred["direction"] = loser
+        errors = JsonValidator._check_next_bar_prediction({"next_bar_prediction": pred})
+        assert any(error.startswith("next_bar_prediction.direction:") for error in errors)
+
+
+def test_empty_probabilities_remain_invalid_in_validator():
+    pred = {"direction": "bearish", "probabilities": {}}
+    _normalize_next_bar_prediction(pred)
+    assert pred["direction"] == "bearish"
+    errors = JsonValidator._check_next_bar_prediction({"next_bar_prediction": pred})
+    assert any(error.startswith("next_bar_prediction.probabilities: sum=0") for error in errors)
+
+
+@pytest.mark.parametrize("probabilities", [
+    {"bullish": 40, "bearish": 40, "neutral": 20},
+    {"bullish": 20, "bearish": 60, "neutral": 20},
+])
+def test_public_normalizer_canonicalizes_matching_direction(probabilities):
+    result = normalize_stage2({"decision": {"order_type": "不下单"}, "next_bar_prediction": {
+        "direction": " Bearish ", "probabilities": probabilities,
+        "reasoning": "test", "unpredictable": False,
+    }})
+    assert result["next_bar_prediction"]["direction"] == "bearish"
+    assert JsonValidator._check_next_bar_prediction(result) == []
 
 
 # ── P3: unpredictable branch null consistency ────────────────────────────────

@@ -16,6 +16,8 @@ NOTICE = "本地规则示意（非模型推理，非逐节点验证）"
 
 def is_glm_flash(provider: Any) -> bool:
     # Exact model match: do not change GLM-4-flashx / GLM-5 / other routes.
+    if getattr(provider, "backend", "api") != "api":
+        return False
     return str(getattr(provider, "model", "") or "").strip().lower() == "glm-4-flash"
 
 

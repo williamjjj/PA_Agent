@@ -131,3 +131,7 @@ docs/changelog/
 Thumbs.db
 Desktop.ini
 .DS_Store
+.local/
+release/
+/quant/
+/harness-work/

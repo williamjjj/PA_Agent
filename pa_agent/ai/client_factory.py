@@ -17,6 +17,10 @@ def create_ai_client(
     """Return TraeClient for ``openclaw_twc*``, QoderClient for
     ``openclaw_qc*``, else DeepSeekClient."""
     log = logger_ or logging.getLogger(__name__)
+    if settings.backend != "api":
+        from pa_agent.ai.local_harness import LocalHarnessClient
+
+        return LocalHarnessClient(settings=settings, logger_=log)
     if is_openclaw_twc_model(settings.model):
         from pa_agent.ai.trae_client import TraeClient
 

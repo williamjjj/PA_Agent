@@ -13,6 +13,7 @@ import pytest
 
 from tests.fixtures.validators import schema_test_validator
 from pa_agent.ai.router import route_strategy_files
+from pa_agent.config.settings import Settings
 from pa_agent.data.base import KlineFrame
 from pa_agent.orchestrator.two_stage import TwoStageOrchestrator
 from pa_agent.util.threading import CancelToken, OrchestratorEvent
@@ -99,6 +100,7 @@ def test_orchestrator_passes_through_prediction(
         validator=validator,
         pending_writer=pending_writer,
         exp_reader=exp_reader,
+        settings=Settings(general={'enable_next_bar_prediction': True}),
     )
 
     record = orchestrator.submit(
@@ -131,6 +133,7 @@ def test_orchestrator_calls_client_twice_max(
         validator=validator,
         pending_writer=pending_writer,
         exp_reader=exp_reader,
+        settings=Settings(general={'enable_next_bar_prediction': True}),
     )
 
     orchestrator.submit(frame=frame, cancel_token=CancelToken(), on_event=lambda e: None)
@@ -167,6 +170,7 @@ def test_short_circuit_emits_unpredictable(
         validator=validator,
         pending_writer=pending_writer,
         exp_reader=exp_reader,
+        settings=Settings(general={'enable_next_bar_prediction': True}),
     )
 
     record = orchestrator.submit(frame=frame, cancel_token=CancelToken(), on_event=lambda e: None)
@@ -193,6 +197,7 @@ def test_log_emits_prediction_line(
         validator=validator,
         pending_writer=pending_writer,
         exp_reader=exp_reader,
+        settings=Settings(general={'enable_next_bar_prediction': True}),
     )
 
     with caplog.at_level(logging.INFO, logger="pa_agent.orchestrator.two_stage"):
@@ -221,6 +226,7 @@ def test_save_full_round_trip(
         validator=validator,
         pending_writer=pending_writer,
         exp_reader=exp_reader,
+        settings=Settings(general={'enable_next_bar_prediction': True}),
     )
 
     record = orchestrator.submit(frame=frame, cancel_token=CancelToken(), on_event=lambda e: None)
@@ -269,6 +275,7 @@ def test_cancel_no_prediction_required(
         validator=validator,
         pending_writer=pending_writer,
         exp_reader=exp_reader,
+        settings=Settings(general={'enable_next_bar_prediction': True}),
     )
 
     # Should not raise, and client should not be called
@@ -297,6 +304,7 @@ def test_network_error_no_prediction_required(
         validator=validator,
         pending_writer=pending_writer,
         exp_reader=exp_reader,
+        settings=Settings(general={'enable_next_bar_prediction': True}),
     )
 
     record = orchestrator.submit(frame=frame, cancel_token=CancelToken(), on_event=lambda e: None)

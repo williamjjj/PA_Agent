@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QTabWidget,
-    QTextEdit,
+    QPlainTextEdit as QTextEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -20,7 +20,9 @@ from PyQt6.QtWidgets import (
 
 
 def _mono_edit() -> QTextEdit:
+    from pa_agent.gui.stream_text import configure_stream_edit
     edit = QTextEdit()
+    configure_stream_edit(edit)
     edit.setReadOnly(True)
     edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
     edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -185,11 +187,8 @@ class AITurnCard(QFrame):
             self._scroll_edit(self._answer_edit)
 
     def _append_to(self, edit: QTextEdit, chunk: str) -> None:
-        cursor = edit.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText(chunk)
-        edit.setTextCursor(cursor)
-        self._scroll_edit(edit)
+        from pa_agent.gui.stream_text import append_preview
+        append_preview(edit, chunk, autoscroll=self._auto_scroll)
 
     def _scroll_edit(self, edit: QTextEdit) -> None:
         if not self._auto_scroll:

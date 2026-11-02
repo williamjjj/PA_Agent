@@ -134,6 +134,8 @@ def supports_kv_prefix_chain(settings: AIProviderSettings | None) -> bool:
     """
     if settings is None:
         return True
+    if settings.backend != "api":
+        return False
     if _is_qclaw_openclaw_agent(settings) or _is_workbuddy_agent(settings):
         return False
     if _is_openclaw_agent_model(settings.model):
@@ -598,6 +600,10 @@ class DeepSeekClient:
             latency_ms = (time.monotonic() - t0) * 1000
             self._log.error("DeepSeekClient API error after %.0f ms: %s", latency_ms, exc)
             raise
+        finally:
+            close = getattr(client, "close", None)
+            if close is not None:
+                close()
 
         latency_ms = (time.monotonic() - t0) * 1000
 
@@ -863,6 +869,10 @@ class DeepSeekClient:
             latency_ms = (time.monotonic() - t0) * 1000
             self._log.error("DeepSeekClient stream error after %.0f ms: %s", latency_ms, exc)
             raise
+        finally:
+            close = getattr(client, "close", None)
+            if close is not None:
+                close()
 
         latency_ms = (time.monotonic() - t0) * 1000
 

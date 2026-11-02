@@ -51,6 +51,12 @@ class RefreshLoop(QThread):
         self._failure_threshold_s = 5.0
         self._in_flight = False  # guard against overlapping fetches
 
+    def _wait(self, seconds: float) -> None:
+        if self._cancel_token is not None:
+            self._cancel_token.wait(seconds)
+        else:
+            time.sleep(seconds)
+
     def run(self) -> None:  # noqa: C901
         """Main loop — runs on the worker thread."""
         failure_start: float | None = None
@@ -64,7 +70,7 @@ class RefreshLoop(QThread):
             # This prevents overlapping WebSocket connections that trigger
             # TradingView rate-limiting (especially in nologin mode).
             if self._in_flight:
-                time.sleep(0.5)
+                self._wait(0.5)
                 continue
 
             t0 = time.monotonic()
@@ -102,7 +108,7 @@ class RefreshLoop(QThread):
             # TradingView's WebSocket endpoint
             if self._consecutive_failures > 0:
                 backoff_s = min(
-                    self._BACKOFF_BASE_S * (2 ** (self._consecutive_failures - 1)),
+                    self._BACKOFF_BASE_S * (2 ** min(self._consecutive_failures - 1, 8)),
                     self._MAX_BACKOFF_S,
                 )
                 logger.debug(
@@ -110,11 +116,11 @@ class RefreshLoop(QThread):
                     backoff_s,
                     self._consecutive_failures,
                 )
-                time.sleep(backoff_s)
+                self._wait(backoff_s)
                 continue
 
             elapsed_ms = (time.monotonic() - t0) * 1000
             sleep_ms = max(0.0, self._interval_ms - elapsed_ms)
             if sleep_ms > 0:
-                time.sleep(sleep_ms / 1000.0)
+                self._wait(sleep_ms / 1000.0)
 

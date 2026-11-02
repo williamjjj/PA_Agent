@@ -327,6 +327,9 @@ class FreeChatSession:
                 raise
             primary_exc = exc
 
+        if getattr(getattr(self._settings, "provider", None), "backend", "api") != "api":
+            raise primary_exc
+
         logger.warning(
             "free-chat primary provider failed (%s); trying spare channels",
             type(primary_exc).__name__,

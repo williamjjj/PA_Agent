@@ -15,6 +15,13 @@ class AIProviderSettings(BaseModel):
     """AI provider connection and behaviour settings."""
     model_config = ConfigDict(extra="ignore")
 
+    backend: Literal["api", "codex", "workbuddy", "hermes"] = "api"
+    harness_executable: str = ""
+    harness_model: str = ""
+    harness_config_dir: str = ""
+    harness_profiles: dict[str, dict[str, str]] = Field(default_factory=dict)
+    harness_timeout_seconds: int = Field(default=600, ge=10, le=3600)
+
     model: str = "deepseek-flash"
     base_url: str = "https://api.deepseek.com"
     api_key: str = ""
@@ -155,6 +162,17 @@ class TushareSettings(BaseModel):
     token: str = ""
 
 
+class TradingViewSettings(BaseModel):
+    """TradingView login credentials (settings.json only; no GUI).
+
+    Empty username/password falls back to anonymous tvDatafeed mode.
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    username: str = ""
+    password: str = ""
+
+
 class PushPlusSettings(BaseModel):
     """PushPlus notification settings (settings.json only; no GUI)."""
     model_config = ConfigDict(extra="ignore")
@@ -174,12 +192,24 @@ class Settings(BaseModel):
     feishu: FeishuSettings = Field(default_factory=FeishuSettings)
     pushplus: PushPlusSettings = Field(default_factory=PushPlusSettings)
     tushare: TushareSettings = Field(default_factory=TushareSettings)
+    tradingview: TradingViewSettings = Field(default_factory=TradingViewSettings)
+
 
 
 def provider_api_key_configured(settings: Settings | None) -> bool:
-    """Return True when a non-empty API key is loaded in memory."""
+    """Whether the selected connection has its local prerequisite configured.
+
+    Discovery is not an authentication test; the harness checks its own login
+    when a request runs. Never import or decrypt another app's credentials.
+    """
     if settings is None:
         return False
+    if settings.provider.backend != "api":
+        from pa_agent.ai.local_harness import discover_harness
+
+        return discover_harness(
+            settings.provider.backend, settings.provider.harness_executable
+        ) is not None
     return bool((settings.provider.api_key or "").strip())
 
 

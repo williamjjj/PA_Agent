@@ -108,9 +108,15 @@ def create_data_source(kind: str | None) -> DataSource:
     """Instantiate a fresh data source for *kind* (not connected)."""
     normalized = normalize_data_source_kind(kind)
     if normalized == "tradingview":
+        from pa_agent.config.paths import SETTINGS_JSON_PATH
+        from pa_agent.config.settings import load_settings
         from pa_agent.data.tradingview import TradingViewSource
 
-        return TradingViewSource()
+        settings = load_settings(SETTINGS_JSON_PATH)
+        return TradingViewSource(
+            username=settings.tradingview.username,
+            password=settings.tradingview.password,
+        )
     if normalized == "ashare":
         from pa_agent.data.eastmoney_source import EastMoneySource
 

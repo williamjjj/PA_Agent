@@ -20,6 +20,7 @@ from PyQt6.QtCore import QThread
 from PyQt6.QtWidgets import QApplication, QPlainTextEdit
 
 from pa_agent.app_context import AppContext
+from pa_agent.config.settings import Settings
 from pa_agent.data.base import IndicatorBundle, KlineBar, KlineFrame
 from pa_agent.util.threading import CancelToken, OrchestratorEvent
 
@@ -89,7 +90,7 @@ def mock_data_source():
 @pytest.fixture
 def app_ctx(pending_writer, mock_data_source, tmp_path):
     """Build a minimal AppContext with mocked components."""
-    ctx = AppContext()
+    ctx = AppContext(settings=Settings(provider={'api_key': 'test-only'}, general={'alert_on_order_opportunity': False}))
     ctx.pending_writer = pending_writer
     ctx.data_source = mock_data_source
     return ctx

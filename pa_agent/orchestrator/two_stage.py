@@ -235,6 +235,9 @@ def _build_empty_record(
             "reasoning_effort": p.reasoning_effort,
             "context_window": p.context_window,
         }
+        if getattr(p, "backend", "api") != "api":
+            ai_provider = {"backend": p.backend, "model": p.harness_model or "harness-default",
+                           "transport": "local-cli", "context_window": p.context_window}
 
     # Serialize kline bars
     kline_data: list[dict] = []
@@ -1314,6 +1317,8 @@ class TwoStageOrchestrator:
 
         if self._settings is None:
             return False
+        if getattr(self._settings.provider, "backend", "api") != "api":
+            return False
         return is_sensenova_fallback_eligible(
             getattr(self._settings.provider, "base_url", "")
         )
@@ -1592,6 +1597,12 @@ class TwoStageOrchestrator:
         Layer 2: on network error, WorkBuddy / TRAE Work CN / QClaw for openclaw_* models.
         Provider-chain switching is in-memory only; settings.json is never rewritten.
         """
+        if getattr(self._provider(), "backend", "api") != "api":
+            return self._client.stream_chat(
+                messages, on_reasoning_token=on_reasoning_token,
+                on_content_token=on_content_token, cancel_token=cancel_token,
+                thinking=thinking, reasoning_effort=reasoning_effort,
+            )
         original_model = (
             self._settings.provider.model if self._settings is not None else ""
         )

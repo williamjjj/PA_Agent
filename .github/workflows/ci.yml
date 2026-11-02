@@ -2,9 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "codex/local-harness-*"]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -15,10 +19,19 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -r packaging/requirements-build.txt -e ".[dev]"
 
-      - name: Verify install
-        run: python -c "import pa_agent; print('OK')"
+      - name: Desktop regression tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PA_AGENT_DATA_DIR: ${{ runner.temp }}/pa-agent-tests
+        run: python -m pytest tests -m "not live" --timeout=40 --junitxml=regression.xml
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-regression
+          path: regression.xml

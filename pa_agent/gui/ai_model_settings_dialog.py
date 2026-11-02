@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -58,6 +59,8 @@ class AIModelSettingsDialog(QDialog):
         self.setWindowTitle("AI 模型设置")
         self.setMinimumWidth(520)
         self._settings = settings
+        self._harness_profiles = {k:dict(v) for k,v in settings.provider.harness_profiles.items()}
+        self._previous_backend = None
         self._setup_ui()
         self._load_values()
 
@@ -69,6 +72,34 @@ class AIModelSettingsDialog(QDialog):
         provider_group = QGroupBox("AI 提供商")
         form = QFormLayout(provider_group)
 
+        self._backend_combo = QComboBox()
+        for title, value in (("API 接口", "api"), ("本地 Codex（使用现有登录）", "codex"),
+                             ("本地 WorkBuddy / CodeBuddy CLI", "workbuddy"),
+                             ("本地 Hermes（使用现有配置）", "hermes")):
+            self._backend_combo.addItem(title, value)
+        form.addRow("分析方式：", self._backend_combo)
+        self._harness_path = QLineEdit()
+        self._harness_path.setPlaceholderText("自动查找；也可指定已安装的 CLI 入口")
+        local_row = QHBoxLayout()
+        local_row.addWidget(self._harness_path)
+        browse = QPushButton("选择文件")
+        browse.clicked.connect(self._browse_harness)
+        local_row.addWidget(browse)
+        self._harness_group = QGroupBox("本地 agent")
+        harness_form = QFormLayout(self._harness_group)
+        harness_form.addRow("程序：", local_row)
+        self._harness_model = QLineEdit()
+        self._harness_model.setPlaceholderText("留空使用 harness 自己的默认模型")
+        harness_form.addRow("模型（可选）：", self._harness_model)
+        self._harness_config_dir = QLineEdit()
+        self._harness_config_dir.setPlaceholderText("WorkBuddy / CodeBuddy 专用配置目录；通常留空")
+        harness_form.addRow("配置目录（可选）：", self._harness_config_dir)
+        self._harness_status = QLabel()
+        self._harness_status.setWordWrap(True)
+        harness_form.addRow(self._harness_status)
+        form.addRow(self._harness_group)
+        self._provider_form = form
+
         self._model_edit = QLineEdit()
         form.addRow("模型 (model):", self._model_edit)
 
@@ -76,6 +107,7 @@ class AIModelSettingsDialog(QDialog):
         form.addRow("Base URL:", self._base_url_edit)
 
         api_key_row = QHBoxLayout()
+        self._api_key_row = api_key_row
         self._api_key_edit = QLineEdit()
         self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Normal)
         self._api_key_edit.setPlaceholderText("输入 API Key")
@@ -115,6 +147,9 @@ class AIModelSettingsDialog(QDialog):
         self._agent_tutorial_btn.clicked.connect(self._open_agent_tutorial_url)
         form.addRow("", self._agent_tutorial_btn)
 
+        self._backend_combo.currentIndexChanged.connect(self._backend_selected)
+        self._harness_path.textChanged.connect(self._refresh_backend)
+
         root.addWidget(provider_group)
 
         buttons = QDialogButtonBox(
@@ -135,6 +170,13 @@ class AIModelSettingsDialog(QDialog):
 
     def _load_values(self) -> None:
         p = self._settings.provider
+        self._backend_combo.blockSignals(True)
+        self._backend_combo.setCurrentIndex(self._backend_combo.findData(p.backend))
+        self._harness_path.setText(p.harness_executable)
+        self._harness_model.setText(p.harness_model)
+        self._harness_config_dir.setText(p.harness_config_dir)
+        self._previous_backend = p.backend
+        self._backend_combo.blockSignals(False)
         self._model_edit.setText(p.model)
         self._base_url_edit.setText(p.base_url)
         self._api_key_edit.setText(p.api_key)
@@ -144,9 +186,75 @@ class AIModelSettingsDialog(QDialog):
         idx = self._reasoning_effort_combo.findText(p.reasoning_effort)
         if idx >= 0:
             self._reasoning_effort_combo.setCurrentIndex(idx)
+        self._refresh_backend()
+
+    def _browse_harness(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "选择本地 agent 的 CLI 入口")
+        if path:
+            self._harness_path.setText(path)
+
+    def _remember_harness(self) -> None:
+        if self._previous_backend and self._previous_backend != "api":
+            self._harness_profiles[self._previous_backend] = {
+                "executable":self._harness_path.text().strip(),
+                "model":self._harness_model.text().strip(),
+                "config_dir":self._harness_config_dir.text().strip(),
+            }
+
+    def _backend_selected(self) -> None:
+        self._remember_harness()
+        backend = self._backend_combo.currentData()
+        profile = self._harness_profiles.get(backend,{})
+        self._previous_backend = backend
+        self._harness_path.setText(profile.get("executable",""))
+        self._harness_model.setText(profile.get("model",""))
+        self._harness_config_dir.setText(profile.get("config_dir",""))
+        self._refresh_backend()
+
+    def _refresh_backend(self) -> None:
+        from pa_agent.ai.local_harness import discover_harness
+        backend = self._backend_combo.currentData()
+        local = backend != "api"
+        self._harness_group.setVisible(local)
+        for field in (self._model_edit, self._base_url_edit, self._api_key_edit,
+                      self._show_key_btn, self._thinking_check, self._reasoning_effort_combo,
+                      self._api_key_help_btn, self._agent_tutorial_btn):
+            field.setEnabled(not local)
+        for row in (self._model_edit, self._base_url_edit, self._api_key_row,
+                    self._thinking_check, self._reasoning_effort_combo,
+                    self._api_key_help_btn, self._agent_tutorial_btn):
+            self._provider_form.setRowVisible(row, not local)
+        if local:
+            path = discover_harness(backend, self._harness_path.text().strip())
+            self._harness_status.setToolTip(str(path) if path else "")
+            self._harness_status.setText(
+                ("已找到 CLI 程序；登录状态需实际调用确认。\n" if path else "尚未找到 CLI，请选择程序入口。\n")
+                + "无需在 PA Agent 填写 API。请先在对应 agent 中登录并完成模型配置。"
+                + "\n本地调用仍遵循该账户的网络要求和额度；这里只检测安装路径。"
+            )
+        self._refresh_glm_key_row()
 
     def _on_save(self) -> None:
         p = self._settings.provider
+        backend = self._backend_combo.currentData()
+        self._remember_harness()
+        p.harness_profiles = self._harness_profiles
+        if backend != "api":
+            from pa_agent.ai.local_harness import discover_harness
+            path = self._harness_path.text().strip()
+            if discover_harness(backend, path) is None:
+                QMessageBox.warning(self, "未找到本地 agent", "请先安装对应 CLI，或选择它的程序入口。")
+                return
+            p.backend = backend
+            p.harness_executable = path
+            p.harness_model = self._harness_model.text().strip()
+            p.harness_config_dir = self._harness_config_dir.text().strip()
+            self._remember_harness()
+            p.harness_profiles = self._harness_profiles
+            save_settings(self._settings, SETTINGS_JSON_PATH)
+            self.accept()
+            return
+        p.backend = "api"
         model = self._model_edit.text().strip()
         base_url = self._base_url_edit.text().strip()
         api_key = self._api_key_edit.text().strip()
@@ -197,7 +305,8 @@ class AIModelSettingsDialog(QDialog):
         """GLM 备用 Key 只在主通道为 SenseNova 网关时有意义。"""
         from pa_agent.ai.glm_backup import is_sensenova_base
 
-        visible = is_sensenova_base(self._base_url_edit.text().strip())
+        visible = (self._backend_combo.currentData() == "api"
+                   and is_sensenova_base(self._base_url_edit.text().strip()))
         self._glm_key_label.setVisible(visible)
         self._glm_key_edit.setVisible(visible)
 

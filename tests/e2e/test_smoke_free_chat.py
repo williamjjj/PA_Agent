@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from pa_agent.app_context import AppContext
+from pa_agent.config.settings import Settings
 from tests.fixtures.kline_bars import make_newest_first_bars
 from tests.fixtures.validators import schema_test_validator
 from pa_agent.ai.router import route_strategy_files
@@ -21,6 +22,8 @@ CHAT_REPLY_CONTENT = "This is a follow-up AI response."
 
 def _make_reply(content_dict: dict) -> MagicMock:
     reply = MagicMock()
+    reply.reasoning_content = ''
+    reply.latency_ms = 1.0
     reply.content = json.dumps(content_dict)
     reply.raw = {"content": reply.content}
     reply.usage = MagicMock()
@@ -34,6 +37,8 @@ def _make_reply(content_dict: dict) -> MagicMock:
 def _make_chat_reply(content: str) -> MagicMock:
     """Build a mock AIReply for a free-chat turn."""
     reply = MagicMock()
+    reply.reasoning_content = ''
+    reply.latency_ms = 1.0
     reply.content = content
     reply.reasoning_content = ""
     reply.raw = {"content": content}
@@ -60,7 +65,7 @@ def _make_ctx(tmp_path):
 
     pending_writer = MagicMock()
 
-    ctx = AppContext()
+    ctx = AppContext(settings=Settings(provider={'api_key': 'test-only'}, general={'alert_on_order_opportunity': False}))
     ctx.client = mock_client
     ctx.assembler = mock_assembler
     ctx.router = route_strategy_files
@@ -86,14 +91,14 @@ def test_free_chat_after_analysis(qtbot, tmp_path):
     qtbot.addWidget(window)
     window.show()
 
-    window._ctx.settings.general.analysis_bar_count = 5
-    window._last_frame_ready_bars = make_newest_first_bars(9, with_forming=True)
+    window._ctx.settings.general.analysis_bar_count = 20
+    window._last_frame_ready_bars = make_newest_first_bars(75, with_forming=True)
 
     window._on_submit_analysis()
 
     # Poll until the analysis is no longer in progress
     qtbot.waitUntil(
-        lambda: not window._analysis_in_progress,
+        lambda: pending_writer.save_full.call_count == 1 and not window._analysis_in_progress,
         timeout=10_000,
     )
 

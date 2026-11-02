@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from pa_agent.app_context import AppContext
+from pa_agent.config.settings import Settings
 from tests.fixtures.kline_bars import make_newest_first_bars
 from tests.fixtures.validators import schema_test_validator
 from pa_agent.ai.router import route_strategy_files
@@ -21,6 +22,8 @@ from tests.fixtures.ai_payloads import VALID_STAGE1, VALID_STAGE2_ORDER
 
 def _make_reply(content_dict: dict) -> MagicMock:
     reply = MagicMock()
+    reply.reasoning_content = ''
+    reply.latency_ms = 1.0
     reply.content = json.dumps(content_dict)
     reply.raw = {"content": reply.content}
     reply.usage = MagicMock()
@@ -65,7 +68,7 @@ def _make_ctx_slow_stage2(tmp_path):
 
     pending_writer = MagicMock()
 
-    ctx = AppContext()
+    ctx = AppContext(settings=Settings(provider={'api_key': 'test-only'}, general={'alert_on_order_opportunity': False}))
     ctx.client = mock_client
     ctx.assembler = mock_assembler
     ctx.router = route_strategy_files
@@ -88,10 +91,11 @@ def test_switch_mid_flight_cancels_worker(qtbot, tmp_path):
     qtbot.addWidget(window)
     window.show()
 
-    window._ctx.settings.general.analysis_bar_count = 5
-    window._last_frame_ready_bars = make_newest_first_bars(9, with_forming=True)
+    window._ctx.settings.general.analysis_bar_count = 20
+    window._last_frame_ready_bars = make_newest_first_bars(75, with_forming=True)
 
     window._on_submit_analysis()
+    qtbot.waitUntil(lambda: window._worker is not None, timeout=10_000)
     worker = window._worker
     assert worker is not None, "Worker should have been created"
 
@@ -100,6 +104,7 @@ def test_switch_mid_flight_cancels_worker(qtbot, tmp_path):
 
     # Trigger symbol switch mid-flight
     window._symbol_combo.setCurrentText("EURUSD")
+    window._on_symbol_or_tf_changed("EURUSD", window._tf_combo.currentText())
 
     # Worker should be cancelled and finish within a reasonable time
     # (the slow_chat loop checks cancel_token every 50 ms)
@@ -107,10 +112,4 @@ def test_switch_mid_flight_cancels_worker(qtbot, tmp_path):
     assert finished, "Worker did not finish after symbol switch"
 
     # Tab2 input should be disabled after a symbol switch
-    chat_tab = window._tabs.widget(1)
-    from PyQt6.QtWidgets import QPlainTextEdit
-    input_widgets = chat_tab.findChildren(QPlainTextEdit)
-    for widget in input_widgets:
-        assert not widget.isEnabled(), (
-            "Tab2 input should be disabled after symbol switch"
-        )
+    assert not window._stream_panel._input_edit.isEnabled()

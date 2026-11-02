@@ -19,9 +19,32 @@
 - 📚 **经验库**：按周期位置检索历史案例供分析参考
 - 📝 **完整落盘**：Prompt、原始响应、诊断/决策 JSON、Token 用量、追问记录
 - 🛡️ **可配置校验体系**：JSON 校验、一致性检查、语义校验、截断修复、失败自动重试
-- 🔒 **API Key** 本地加密存储
+- 🔒 **模型设置** 保存在本机配置目录；本地 harness 模式不需要向 PA Agent 提供 API Key
 
 ---
+
+## 本地增强版（1.68.1）
+
+此分支以 `williamjjj/PA_Agent` 的 `222badb`（1.68）为基础，并移植
+`codex/web-multiuser-vercel` 的 AlphaGPT 因果因子、历史回测和 CPU 公式搜索。
+
+- **免填 API 的分析方式**：在「AI 模型设置」选择 Codex、WorkBuddy/CodeBuddy CLI 或 Hermes。
+  使用该 harness 自己的登录和模型设置；不等于离线推理或无限额度。可指定实际 CLI 入口，模型留空沿用默认。
+  WorkBuddy 桌面专用精简 CLI 可能不支持独立登录，需要可独立登录的完整 CLI；路径检测不代表认证成功。
+- **AlphaGPT 量化研究**：菜单「AlphaGPT 量化研究」可计算当前行情因子，导入 CSV，
+  运行历史回测、挖掘与恢复公式，查看权益曲线并导出包含数据指纹的完整结果。
+  沿用网页分支的因果计算与样本外口径；不包含旧 Transformer/GPU 训练、实盘下单或旧权重转换。
+- **在 harness 内调用**：`pa-agent-cli.exe integrate --target all` 安装 PA Agent 技能，
+  然后在对应工具里请求使用 PA Agent。命令行也支持 `doctor / analyze / factors / research / mine`。
+- **安装版**：双击 `PA-Agent-1.68.1-Setup-x64.exe`，按当前用户安装并创建快捷方式。
+- **绿色版**：解压 `PA-Agent-1.68.1-Portable-x64.zip`，双击 `PA-Agent.exe`。
+  运行时与依赖已包含，无需安装 Python、激活虚拟环境或另行安装依赖。
+
+安装版数据保存在 `%LOCALAPPDATA%\PA Agent`；绿色版保存在程序旁的 `data`。
+源码运行继续使用项目内原有数据。`PA_AGENT_DATA_DIR` 可显式指定数据目录。
+更新与卸载保留运行数据；分发包不包含个人账户、行情记录或密钥。
+
+使用、构建和验证边界见 [本地版说明](docs/LOCAL_RELEASE.md)。
 
 ## 环境要求
 

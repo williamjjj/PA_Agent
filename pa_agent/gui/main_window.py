@@ -177,6 +177,11 @@ class _AnalysisWorker(QThread):
 
     def run(self) -> None:
         from pa_agent.util.threading import OrchestratorEvent
+        from pa_agent.util.stream_batcher import StreamBatcher
+
+        batch = StreamBatcher(lambda stage, kind, text:
+                             (self.reasoning_token if kind == "reasoning" else self.content_token)
+                             .emit(stage, text))
 
         _EVENT_LABELS = {
             OrchestratorEvent.Stage1Started: "阶段一分析中…",
@@ -192,6 +197,7 @@ class _AnalysisWorker(QThread):
         }
 
         def on_event(event: OrchestratorEvent) -> None:
+            batch.flush()
             label = _EVENT_LABELS.get(event, str(event))
             self.status_update.emit(label)
             if event == OrchestratorEvent.Stage1Retry:
@@ -200,18 +206,19 @@ class _AnalysisWorker(QThread):
                 self.retry_occurred.emit("stage2")
 
         def on_stage1_reasoning(chunk: str) -> None:
-            self.reasoning_token.emit("stage1", chunk)
+            batch.add("stage1", "reasoning", chunk)
 
         def on_stage1_content(chunk: str) -> None:
-            self.content_token.emit("stage1", chunk)
+            batch.add("stage1", "content", chunk)
 
         def on_stage2_reasoning(chunk: str) -> None:
-            self.reasoning_token.emit("stage2", chunk)
+            batch.add("stage2", "reasoning", chunk)
 
         def on_stage2_content(chunk: str) -> None:
-            self.content_token.emit("stage2", chunk)
+            batch.add("stage2", "content", chunk)
 
         def on_stage_prompt(stage: str, system: str, user: str) -> None:
+            batch.flush()
             self.stage_prompt_ready.emit(stage, system, user)
 
         def on_stage2_files(files: list[str]) -> None:
@@ -233,6 +240,7 @@ class _AnalysisWorker(QThread):
             )
             decision = record.stage2_decision or {}
         except Exception as exc:  # noqa: BLE001
+            batch.flush()
             from pa_agent.ai.deepseek_client import CancelledError as _CancelledError
             if isinstance(exc, _CancelledError):
                 logger.info("Analysis worker cancelled: %s", exc)
@@ -244,6 +252,7 @@ class _AnalysisWorker(QThread):
                 record = self._persist_program_error_record(exc)
             self.error_occurred.emit(str(exc))
 
+        batch.flush()
         if record is not None:
             self.record_ready.emit(record)
         self.finished.emit(decision)
@@ -378,6 +387,10 @@ class MainWindow(QMainWindow):
         _general_action.triggered.connect(self._open_general_settings_dialog)
         menu_bar.addAction(_general_action)
 
+        quant_action = QAction("AlphaGPT 量化研究", self)
+        quant_action.triggered.connect(self._open_quant_dialog)
+        menu_bar.addAction(quant_action)
+
         # 4. 演示模式 — 保留下拉菜单
         demo_menu = menu_bar.addMenu("演示模式")
         self._demo_manual_action = QAction("手动选择记录…", self)
@@ -391,6 +404,12 @@ class MainWindow(QMainWindow):
         self._demo_exit_action.triggered.connect(self._exit_demo_mode)
         self._demo_exit_action.setEnabled(False)
         demo_menu.addAction(self._demo_exit_action)
+
+    def _open_quant_dialog(self) -> None:
+        from pa_agent.gui.quant_dialog import QuantDialog
+        dialog = QuantDialog(getattr(self._chart_widget, "_latest_frame", None),
+                             source=self._current_data_source_kind(), parent=self)
+        dialog.exec()
 
     def _build_workbench(self) -> QWidget:
         """Build chart + AI sidebar workbench."""
@@ -656,7 +675,7 @@ class MainWindow(QMainWindow):
         outer_layout.addLayout(ctrl_layout)
 
         self._api_key_alert_label = QLabel(
-            "未配置 API Key：请点击左上角「AI 模型」按钮，在设置中填写 API Key 后才能进行 AI 分析。"
+            "请点击左上角「AI 模型」，选择已登录的本地 agent，或配置 API 接口。"
         )
         self._api_key_alert_label.setWordWrap(True)
         self._api_key_alert_label.setStyleSheet(
@@ -3209,10 +3228,15 @@ class MainWindow(QMainWindow):
             except Exception as exc:  # noqa: BLE001
                 self._last_analysis_had_error = True
                 logger.exception("Analysis finished UI update failed: %s", exc)
-            finally:
-                self._on_worker_done()
 
         self._worker.record_ready.connect(self._on_record_ready)
+        # Connect the BASE signal: the subclass's payload signal fires before
+        # run() has returned and is too early to destroy a QThread.
+        def _cleanup_finished_worker() -> None:
+            if getattr(self, "_analysis_worker_id", None) is worker_id and _qobject_alive(self):
+                self._on_worker_done()
+        QThread.finished.__get__(self._worker).connect(_cleanup_finished_worker)
+        QThread.finished.__get__(self._worker).connect(self._worker.deleteLater)
         self._worker.finished.connect(_on_worker_finished)
         self._worker.error_occurred.connect(self._on_analysis_error)
         self._worker.status_update.connect(self._on_status_update)
@@ -4268,9 +4292,9 @@ class MainWindow(QMainWindow):
         if not self._has_api_key_configured():
             QMessageBox.information(
                 self,
-                "需要配置 API Key",
-                "尚未配置 API Key，将打开设置窗口。\n"
-                "请填写 API Key 并点击「保存」，才能使用「提交分析」与「增量分析」。",
+                "选择分析方式",
+                "请选择已安装并登录的 Codex、WorkBuddy 或 Hermes，无需填写 API。\n"
+                "也可以继续使用 API 接口；保存后即可提交分析。",
             )
             self._open_settings_dialog(focus_api_key=True)
 
@@ -4295,7 +4319,7 @@ class MainWindow(QMainWindow):
         cur = status_bar.currentMessage() or ""
         if cur in ("就绪", "") or "API Key" in cur or "提交分析已锁定" in cur:
             status_bar.showMessage(
-                "未配置 API Key：请点击左上角「AI 模型」填写后才能分析"
+                "分析方式尚未就绪：请在「AI 模型」选择本地 agent 或配置 API"
             )
 
     def _open_settings_dialog(self, *, focus_api_key: bool = False) -> None:
@@ -4376,6 +4400,9 @@ class MainWindow(QMainWindow):
             self._ai_mode_label.setText("")
             return
         p = settings.provider
+        if p.backend != "api":
+            self._ai_mode_label.setText(f"本地 {p.backend} · {p.harness_model or '使用 harness 默认模型'}")
+            return
         base = (p.base_url or "").lower()
         if "deepseek.com" in base:
             thinking = "开" if p.thinking else "关"
@@ -4416,7 +4443,7 @@ class MainWindow(QMainWindow):
     def _submit_block_reason(self) -> str | None:
         """Human-readable reason when submit is disabled, or None if allowed."""
         if not self._has_api_key_configured():
-            return "未配置 API Key，请点击左上角「AI 模型」填写后才能分析"
+            return "分析方式尚未就绪，请在「AI 模型」选择本地 agent 或配置 API"
         if self._demo_mode:
             return "演示模式中，请退出演示后再提交真实分析"
         if self._analysis_in_progress:

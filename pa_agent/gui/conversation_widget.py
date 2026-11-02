@@ -102,16 +102,21 @@ class _ChatWorker(QThread):
         self._cancel_token = cancel_token
 
     def run(self) -> None:
+        from pa_agent.util.stream_batcher import StreamBatcher
+        batch = StreamBatcher(lambda stage, kind, text:
+                             (self.reasoning_token if kind == "reasoning" else self.content_token).emit(text))
         try:
             reply = self._session.send(
                 self._user_text,
                 self._cancel_token,
-                on_reasoning_token=lambda chunk: self.reasoning_token.emit(chunk),
-                on_content_token=lambda chunk: self.content_token.emit(chunk),
+                on_reasoning_token=lambda chunk: batch.add("chat", "reasoning", chunk),
+                on_content_token=lambda chunk: batch.add("chat", "content", chunk),
                 on_progress=lambda text: self.progress.emit(text),
             )
+            batch.flush()
             self.finished.emit(reply.content, reply.reasoning_content or "")
         except Exception as exc:  # noqa: BLE001
+            batch.flush()
             logger.error("ChatWorker error: %s", exc, exc_info=True)
             self.error.emit(str(exc))
 
@@ -377,8 +382,8 @@ class ConversationWidget(QWidget):
             record.reasoning += reasoning
         if content:
             record.content += content
-        if record.status == "streaming":
-            self._refresh_timeline_text(record)
+        # The streaming summary is static; rewriting it on every delta causes
+        # needless list layout/paint work as the history grows.
         if record is not self._active_turn:
             return
         idx = self._turn_index(record)
@@ -582,8 +587,8 @@ class ConversationWidget(QWidget):
         )
         self._worker.finished.connect(self._on_reply_received)
         self._worker.error.connect(self._on_reply_error)
-        self._worker.finished.connect(lambda *_: self._on_worker_done())
-        self._worker.error.connect(lambda *_: self._on_worker_done())
+        QThread.finished.__get__(self._worker).connect(self._on_worker_done)
+        QThread.finished.__get__(self._worker).connect(self._worker.deleteLater)
         self._worker.start()
 
     def _on_stop(self) -> None:

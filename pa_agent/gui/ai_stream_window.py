@@ -52,17 +52,22 @@ class _ChatWorker(QThread):
         self._cancel_token = cancel_token
 
     def run(self) -> None:
+        from pa_agent.util.stream_batcher import StreamBatcher
+        batch = StreamBatcher(lambda stage, kind, text:
+                             (self.reasoning_token if kind == "reasoning" else self.content_token).emit(text))
         try:
             reply = self._session.send(
                 self._user_text,
                 self._cancel_token,
-                on_reasoning_token=lambda c: self.reasoning_token.emit(c),
-                on_content_token=lambda c: self.content_token.emit(c),
+                on_reasoning_token=lambda c: batch.add("chat", "reasoning", c),
+                on_content_token=lambda c: batch.add("chat", "content", c),
                 on_progress=lambda t: self.progress.emit(t),
             )
+            batch.flush()
             hit_pct = round(reply.usage.cache_hit_rate * 100, 1) if reply.usage else 0.0
             self.finished.emit(reply.content, reply.reasoning_content or "", hit_pct)
         except Exception as exc:  # noqa: BLE001
+            batch.flush()
             logger.error("ChatWorker error: %s", exc, exc_info=True)
             self.error.emit(str(exc))
 
@@ -110,6 +115,8 @@ class AIStreamPanel(QWidget):
         layout.addWidget(rl)
 
         self._reasoning_edit = QPlainTextEdit()
+        from pa_agent.gui.stream_text import configure_stream_edit
+        configure_stream_edit(self._reasoning_edit)
         self._reasoning_edit.setObjectName("reasoningPane")
         self._reasoning_edit.setReadOnly(True)
         self._reasoning_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
@@ -369,9 +376,8 @@ class AIStreamPanel(QWidget):
                 self._reasoning_chars += len(chunk)
             else:
                 self._content_chars += len(chunk)
-        self._reasoning_edit.moveCursor(QTextCursor.MoveOperation.End)
-        self._reasoning_edit.insertPlainText(chunk)
-        self._reasoning_edit.moveCursor(QTextCursor.MoveOperation.End)
+        from pa_agent.gui.stream_text import append_preview
+        append_preview(self._reasoning_edit, chunk)
         self._update_stats()
         if stage == self._stage:
             title = self._stage_title(self._stage) if self._stage in ("stage1", "stage2") else "追问"
@@ -607,8 +613,8 @@ class AIStreamPanel(QWidget):
         self._worker.progress.connect(self._on_chat_progress)
         self._worker.finished.connect(self._on_reply_done)
         self._worker.error.connect(self._on_reply_error)
-        self._worker.finished.connect(lambda *_: self._on_worker_done())
-        self._worker.error.connect(lambda *_: self._on_worker_done())
+        QThread.finished.__get__(self._worker).connect(self._on_worker_done)
+        QThread.finished.__get__(self._worker).connect(self._worker.deleteLater)
         self._worker.start()
 
     def _on_reply_done(self, content: str, reasoning: str, cache_hit_pct: float) -> None:
