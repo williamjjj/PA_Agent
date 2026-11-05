@@ -23,9 +23,11 @@
 
 ---
 
-## 本地增强版（1.68.1）
+## 本地增强版（1.68.2）
 
-[下载安装包与绿色版](https://github.com/williamjjj/PA_Agent/releases/tag/desktop-1.68.1-20261103) · [实测记录](docs/LOCAL_VALIDATION_20261103.md)
+新增 **管理数据源** 与 **资讯与 MCP**：启用股票/期货行情，添加币安、OKX、CSV、自定义 API，以及金十/东方财富妙想 MCP；资讯可选择附加到 Codex 分析，并保留来源记录。使用说明见 [数据源与资讯接入](docs/DATA_SOURCES.md)。
+
+[下载安装包与绿色版](https://github.com/williamjjj/PA_Agent/releases/tag/desktop-1.68.2-20261105) · [原版实测记录](docs/LOCAL_VALIDATION_20261103.md) · [数据源功能说明](docs/DATA_SOURCES.md)
 
 此分支以 `williamjjj/PA_Agent` 的 `222badb`（1.68）为基础，并移植
 `codex/web-multiuser-vercel` 的 AlphaGPT 因果因子、历史回测和 CPU 公式搜索。
@@ -38,8 +40,8 @@
   沿用网页分支的因果计算与样本外口径；不包含旧 Transformer/GPU 训练、实盘下单或旧权重转换。
 - **在 harness 内调用**：`pa-agent-cli.exe integrate --target all` 安装 PA Agent 技能，
   然后在对应工具里请求使用 PA Agent。命令行也支持 `doctor / analyze / factors / research / mine`。
-- **安装版**：双击 `PA-Agent-1.68.1-Setup-x64.exe`，按当前用户安装并创建快捷方式。
-- **绿色版**：解压 `PA-Agent-1.68.1-Portable-x64.zip`，双击 `PA-Agent.exe`。
+- **安装版**：双击 `PA-Agent-1.68.2-Setup-x64.exe`，按当前用户安装并创建快捷方式。
+- **绿色版**：解压 `PA-Agent-1.68.2-Portable-x64.zip`，双击 `PA-Agent.exe`。
   运行时与依赖已包含，无需安装 Python、激活虚拟环境或另行安装依赖。
 
 安装版数据保存在 `%LOCALAPPDATA%\PA Agent`；绿色版保存在程序旁的 `data`。

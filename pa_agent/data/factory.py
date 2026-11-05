@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pa_agent.data.base import DataSource
+from pa_agent.data.source_config import BUILTIN_SOURCES
 from pa_agent.data.market_defaults import (
     A_SHARE_DEFAULT_SYMBOL,
     GOLD_MT5_SYMBOL,
@@ -20,13 +21,8 @@ DataSourceKind = Literal[
     "yfinance",
 ]
 
-#: 是否在界面「数据来源」下拉框里显示 A股（专属数据源）。
-#:
-#: ⚠️ 只能改代码，UI 设置里不暴露（用户明确要求）：默认 False = 不显示，
-#: 界面只有 MT5 / TradingView。需要时把这里改成 True 并重启程序即可。
-#: 关闭显示不影响该 kind 本身——它始终是合法 kind，脚本/后端仍可用
-#: ``create_data_source("ashare")`` 创建；已经保存过 ashare 的配置会被界面
-#: 回退到 MT5（沿用「保存的源不在下拉列表就回退默认」的既有行为）。
+#: Compatibility default for callers without settings. The desktop's data-source
+#: manager persists enabled built-ins and custom profiles independently.
 SHOW_ASHARE_DATA_SOURCE: bool = False
 
 #: A股专属数据源在界面/状态栏的统一文案。
@@ -41,8 +37,17 @@ _BASE_SOURCE_CHOICES: tuple[tuple[DataSourceKind, str], ...] = (
 
 def data_source_choices(
     show_ashare: bool | None = None,
-) -> tuple[tuple[DataSourceKind, str], ...]:
+    *, settings=None,
+) -> tuple[tuple[str, str], ...]:
     """界面可选数据源列表；*show_ashare* 缺省时取 :data:`SHOW_ASHARE_DATA_SOURCE`。"""
+    if settings is not None:
+        enabled = set(settings.data_sources.enabled_builtins)
+        # Retain previously selected built-ins when upgrading older settings.
+        enabled.add(settings.general.last_data_source)
+        builtins = tuple((key, label) for key, label in BUILTIN_SOURCES if key in enabled)
+        custom = tuple((p.id, p.name) for p in settings.data_sources.profiles
+                       if p.enabled and p.category == "market")
+        return (*builtins, *custom) or _BASE_SOURCE_CHOICES
     show = SHOW_ASHARE_DATA_SOURCE if show_ashare is None else bool(show_ashare)
     if not show:
         return _BASE_SOURCE_CHOICES
@@ -73,17 +78,22 @@ def default_tradingview_exchange() -> str:
     return ""
 
 
-def normalize_data_source_kind(kind: str | None) -> DataSourceKind:
+def normalize_data_source_kind(kind: str | None, settings=None) -> str:
     """Return a supported data-source kind, defaulting to MT5."""
+    if kind and kind.startswith("custom:"):
+        return kind if source_profile(kind, settings) is not None else "mt5"
     supported = {k for k, _ in DATA_SOURCE_CHOICES} | _HIDDEN_KINDS
     if kind in supported:
         return kind  # type: ignore[return-value]
     return "mt5"
 
 
-def data_source_label(kind: str | None) -> str:
+def data_source_label(kind: str | None, settings=None) -> str:
     """Human-readable label for *kind*."""
-    normalized = normalize_data_source_kind(kind)
+    profile = source_profile(kind, settings)
+    if profile is not None:
+        return profile.name
+    normalized = normalize_data_source_kind(kind, settings)
     for key, label in DATA_SOURCE_CHOICES:
         if key == normalized:
             return label
@@ -100,19 +110,37 @@ def data_source_label(kind: str | None) -> str:
     return "MT5"
 
 
-def default_symbol_for_kind(kind: str | None) -> str:
-    return _DEFAULT_SYMBOLS[normalize_data_source_kind(kind)]
+def source_profile(kind, settings=None):
+    if not kind or not kind.startswith("custom:"):
+        return None
+    if settings is None:
+        from pa_agent.config.settings import load_settings
+        settings = load_settings()
+    return next((p for p in settings.data_sources.profiles if p.id == kind), None)
 
 
-def create_data_source(kind: str | None) -> DataSource:
+def default_symbol_for_kind(kind: str | None, settings=None) -> str:
+    profile = source_profile(kind, settings)
+    if profile is not None:
+        return profile.symbol
+    return _DEFAULT_SYMBOLS[normalize_data_source_kind(kind, settings)]
+
+
+def create_data_source(kind: str | None, settings=None) -> DataSource:
     """Instantiate a fresh data source for *kind* (not connected)."""
-    normalized = normalize_data_source_kind(kind)
+    if kind and kind.startswith("custom:"):
+        from pa_agent.data.configured_source import ConfiguredSource
+        profile = source_profile(kind, settings)
+        if profile is None:
+            raise ValueError("该数据源已删除，请重新选择。")
+        return ConfiguredSource(profile)
+    normalized = normalize_data_source_kind(kind, settings)
     if normalized == "tradingview":
         from pa_agent.config.paths import SETTINGS_JSON_PATH
         from pa_agent.config.settings import load_settings
         from pa_agent.data.tradingview import TradingViewSource
 
-        settings = load_settings(SETTINGS_JSON_PATH)
+        settings = settings or load_settings(SETTINGS_JSON_PATH)
         return TradingViewSource(
             username=settings.tradingview.username,
             password=settings.tradingview.password,
@@ -130,7 +158,7 @@ def create_data_source(kind: str | None) -> DataSource:
         from pa_agent.config.settings import load_settings
         from pa_agent.data.tushare_source import TushareSource
 
-        return TushareSource(settings=load_settings(SETTINGS_JSON_PATH))
+        return TushareSource(settings=settings or load_settings(SETTINGS_JSON_PATH))
     if normalized == "akshare":
         from pa_agent.data.akshare_source import AkShareSource
 

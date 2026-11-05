@@ -1,3 +1,3 @@
 """PA Agent — AI K-line analysis decision aid package."""
 
-__version__ = "1.68.1"
+__version__ = "1.68.2"

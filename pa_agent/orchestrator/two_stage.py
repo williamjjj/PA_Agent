@@ -341,6 +341,7 @@ class TwoStageOrchestrator:
         pending_writer: "PendingWriter",
         exp_reader: "ExperienceReader",
         settings: Optional["Settings"] = None,
+        information_context: list[dict] | None = None,
     ) -> None:
         self._client = client
         self._assembler = assembler
@@ -349,6 +350,7 @@ class TwoStageOrchestrator:
         self._pending_writer = pending_writer
         self._exp_reader = exp_reader
         self._settings = settings
+        self._information_context = information_context or []
         # Set to True as soon as a provider fallback (GLM-4-flash, ...) takes
         # over. While True, schema / enum validation is relaxed: the fallback
         # model's free-text answers are accepted so the GUI can still render,
@@ -415,6 +417,10 @@ class TwoStageOrchestrator:
         """
         # ── Step 1: Build partial record ──────────────────────────────────────
         record = _build_empty_record(frame, self._settings)
+        from pa_agent.data.information import add_information_context, selected_context
+        information = selected_context(self._information_context, frame.symbol)
+        if information:
+            record = record.model_copy(update={"information_context": information})
         # Every analysis starts from the user's configured provider again.
         self._active_provider = None
         self._on_fallback_provider = False
@@ -468,6 +474,8 @@ class TwoStageOrchestrator:
             )
         else:
             messages_s1 = self._assembler.build_stage1(frame, analysis_mode=analysis_mode)
+
+        messages_s1 = add_information_context(messages_s1, information)
 
         # ── Step 5: Call AI for Stage 1 ───────────────────────────────────────
         logger.debug("\n" + "="*80)
@@ -898,6 +906,9 @@ class TwoStageOrchestrator:
                 provider_settings=getattr(self._settings, "provider", None),
                 structure_flip_cooldown_bars=_flip_cooldown,
             )
+
+        if information and not any("## 用户选定的外部行情与资讯资料" in str(m.get("content", "")) for m in messages_s2):
+            messages_s2 = add_information_context(messages_s2, information)
 
         # ── Step 15: Call AI for Stage 2 ──────────────────────────────────────
         logger.debug("\n" + "="*80)

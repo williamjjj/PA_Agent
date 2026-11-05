@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pa_agent.data.source_config import SourcesSettings
 
 DecisionStance = Literal["conservative", "balanced", "aggressive", "extreme_aggressive"]
 DataSourceKind = Literal[
@@ -81,7 +82,7 @@ class GeneralSettings(BaseModel):
     analysis_bar_count: int = Field(default=100, ge=2, le=5000)
     refresh_interval_ms: int = 1000
     context_warning_threshold_pct: float = 99_999_999.0
-    last_data_source: DataSourceKind = "mt5"
+    last_data_source: str = "mt5"
     #: A-share K-line adjust for East Money / Baostock (qfq=前复权)
     kline_adjust: Literal["qfq", "hfq", "none"] = "qfq"
     #: TradingView 交易所；空字符串 =（自动）依次探测预设列表
@@ -118,7 +119,7 @@ class GeneralSettings(BaseModel):
     @field_validator("last_data_source", mode="before")
     @classmethod
     def _coerce_legacy_data_source(cls, v: object) -> object:
-        if v in ("yfinance", "eastmoney", "adata", "a_share"):
+        if v in ("eastmoney", "adata", "a_share"):
             return "ashare"
         if v == "tushare":
             return "tushare"
@@ -193,6 +194,7 @@ class Settings(BaseModel):
     pushplus: PushPlusSettings = Field(default_factory=PushPlusSettings)
     tushare: TushareSettings = Field(default_factory=TushareSettings)
     tradingview: TradingViewSettings = Field(default_factory=TradingViewSettings)
+    data_sources: SourcesSettings = Field(default_factory=SourcesSettings)
 
 
 

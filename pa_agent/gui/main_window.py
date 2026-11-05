@@ -387,6 +387,13 @@ class MainWindow(QMainWindow):
         _general_action.triggered.connect(self._open_general_settings_dialog)
         menu_bar.addAction(_general_action)
 
+        data_action = QAction("管理数据源", self)
+        data_action.triggered.connect(self._open_data_sources_dialog)
+        menu_bar.addAction(data_action)
+        information_action = QAction("资讯与 MCP", self)
+        information_action.triggered.connect(self._open_information_dialog)
+        menu_bar.addAction(information_action)
+
         quant_action = QAction("AlphaGPT 量化研究", self)
         quant_action.triggered.connect(self._open_quant_dialog)
         menu_bar.addAction(quant_action)
@@ -411,6 +418,55 @@ class MainWindow(QMainWindow):
                              source=self._current_data_source_kind(), parent=self)
         dialog.exec()
 
+    def _reload_data_source_choices(self) -> None:
+        from pa_agent.data.factory import data_source_choices
+        settings = self._ctx.settings
+        choices = data_source_choices(settings=settings)
+        current = self._current_data_source_kind()
+        target = current if current in dict(choices) else settings.general.last_data_source
+        self._data_source_combo.blockSignals(True)
+        self._data_source_combo.clear()
+        for key, label in choices:
+            self._data_source_combo.addItem(label, key)
+        index = self._data_source_combo.findData(target)
+        self._data_source_combo.setCurrentIndex(max(index, 0))
+        self._data_source_combo.blockSignals(False)
+
+    def _open_data_sources_dialog(self) -> None:
+        from pa_agent.gui.data_sources_dialog import DataSourcesDialog
+        if self._analysis_in_progress:
+            self._status_bar.showMessage("请先完成或取消当前分析，再修改数据源。")
+            return
+        old_settings = self._ctx.settings.model_copy(deep=True)
+        dialog = DataSourcesDialog(self._ctx.settings, self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        self._reload_data_source_choices()
+        target = str(self._data_source_combo.currentData())
+        if getattr(self, "_demo_mode", False):
+            self._status_bar.showMessage("数据源已保存；退出演示模式后可选择并使用。")
+            return
+        from pa_agent.data.factory import source_profile
+        current = self._current_data_source_kind()
+        profile_changed = source_profile(current, old_settings) != source_profile(current, self._ctx.settings)
+        auth_changed = ((current == "tradingview" and old_settings.tradingview != self._ctx.settings.tradingview)
+                        or (current == "tushare" and old_settings.tushare != self._ctx.settings.tushare))
+        if target != current or profile_changed or auth_changed:
+            try:
+                self._switch_data_source(target)
+            except Exception as exc:
+                self._status_bar.showMessage(f"设置已保存，连接失败：{exc}。请检查授权后重新选择数据源。")
+        else:
+            self._status_bar.showMessage("数据源已保存，可在「数据来源」中选择新增行情，或打开「资讯与 MCP」。")
+
+    def _open_information_dialog(self) -> None:
+        from pa_agent.gui.information_dialog import InformationDialog
+        dialog = InformationDialog(self._ctx, self._symbol_combo.currentText().strip(), self._tf_combo.currentText(), self)
+        dialog.exec()
+        self._reload_data_source_choices()
+        count = sum(item.get("symbol") == self._symbol_combo.currentText().strip() for item in self._ctx.information_context)
+        self._status_bar.showMessage(f"当前品种已附加 {count} 份外部资讯资料。")
+
     def _build_workbench(self) -> QWidget:
         """Build chart + AI sidebar workbench."""
         from pa_agent.gui.chart_widget import ChartWidget
@@ -433,26 +489,25 @@ class MainWindow(QMainWindow):
 
         # Data source
         from pa_agent.data.factory import (
-            ASHARE_SOURCE_LABEL,
-            DATA_SOURCE_CHOICES,
-            SHOW_ASHARE_DATA_SOURCE,
+            data_source_choices,
             normalize_data_source_kind,
         )
+        _choices = data_source_choices(settings=_settings)
 
         _last_ds = "mt5"
         if _settings is not None:
             _last_ds = normalize_data_source_kind(
-                getattr(_settings.general, "last_data_source", "mt5")
+                getattr(_settings.general, "last_data_source", "mt5"), _settings
             )
         # 如果上次保存的数据源不在 UI 可选列表中, 强制回退 MT5（默认数据源）
-        _ui_kinds = {k for k, _ in DATA_SOURCE_CHOICES}
+        _ui_kinds = {k for k, _ in _choices}
         if _last_ds not in _ui_kinds:
-            _last_ds = "mt5"
+            _last_ds = _choices[0][0]
         self._active_data_source_kind = _last_ds
 
         ctrl_layout.addWidget(QLabel("数据来源:"))
         self._data_source_combo = QComboBox()
-        for kind, label in DATA_SOURCE_CHOICES:
+        for kind, label in _choices:
             self._data_source_combo.addItem(label, kind)
         ds_index = self._data_source_combo.findData(_last_ds)
         if ds_index >= 0:
@@ -463,13 +518,15 @@ class MainWindow(QMainWindow):
             "· MT5（默认，需终端登录）\n"
             "· TradingView（tvDatafeed，A股/港股可走 SSE/SZSE）"
         )
-        if SHOW_ASHARE_DATA_SOURCE:
-            _ds_tip += f"\n· {ASHARE_SOURCE_LABEL}（HTTP 直连，含腾讯/免费替补）"
+        _ds_tip += "\n点击「管理数据源」可启用股票、期货行情，新增交易所、CSV 或 API / MCP。"
         self._data_source_combo.setToolTip(_ds_tip)
         self._data_source_combo.currentIndexChanged.connect(
             self._on_data_source_combo_changed
         )
         ctrl_layout.addWidget(self._data_source_combo)
+        self._manage_data_sources_btn = QPushButton("新增 / 管理")
+        self._manage_data_sources_btn.clicked.connect(self._open_data_sources_dialog)
+        ctrl_layout.addWidget(self._manage_data_sources_btn)
 
         # TradingView exchange is forced to «auto» whenever the data source is TV.
         # We still keep the field visible for clarity, but it is not user-editable.
@@ -1065,6 +1122,20 @@ class MainWindow(QMainWindow):
             normalize_gold_symbol_for_kind,
         )
 
+        if kind.startswith("custom:") or kind in ("yfinance", "eastmoney_futures"):
+            from pa_agent.data.factory import default_symbol_for_kind, source_profile
+            profile = source_profile(kind, self._ctx.settings)
+            self._symbol_combo.blockSignals(True)
+            self._symbol_combo.setCurrentText(default_symbol_for_kind(kind, self._ctx.settings))
+            self._symbol_combo.blockSignals(False)
+            if profile:
+                self._tf_combo.blockSignals(True)
+                if self._tf_combo.findText(profile.timeframe) < 0:
+                    self._tf_combo.addItem(profile.timeframe)
+                self._tf_combo.setCurrentText(profile.timeframe)
+                self._tf_combo.blockSignals(False)
+            return
+
         sym = normalize_gold_symbol_for_kind(
             kind, self._symbol_combo.currentText().strip()
         )
@@ -1163,6 +1234,10 @@ class MainWindow(QMainWindow):
             line.setPlaceholderText("选择左侧品种后在此选合约, 或直接输入如 AO2509")
         elif kind in ("ashare", "akshare", "tushare"):
             line.setPlaceholderText("A股 6 位代码，如 600519；指数 000300 或 sh000300")
+        elif kind == "yfinance":
+            line.setPlaceholderText("如 AAPL、0700.HK、GC=F、BTC-USD")
+        elif kind.startswith("custom:"):
+            line.setPlaceholderText("填写该数据源使用的品种代码，CSV 品种在数据源设置中修改")
         else:
             line.setPlaceholderText("输入 MT5 品种名，如 XAUUSDm…")
 
@@ -1197,7 +1272,7 @@ class MainWindow(QMainWindow):
                 self._symbol_combo.addItem(current)
             self._symbol_combo.setCurrentText(current)
         else:
-            default = default_symbol_for_kind(kind)
+            default = default_symbol_for_kind(kind, self._ctx.settings)
             if self._symbol_combo.findText(default) < 0:
                 self._symbol_combo.addItem(default)
             self._symbol_combo.setCurrentText(default)
@@ -1285,7 +1360,7 @@ class MainWindow(QMainWindow):
                 supported = list(data_source.supported_timeframes())
             except Exception as exc:  # noqa: BLE001
                 logger.debug("supported_timeframes failed: %s", exc)
-        items = [tf for tf in preferred if tf in supported]
+        items = [tf for tf in preferred if tf in supported] + [tf for tf in supported if tf not in preferred]
         if not items and supported:
             items = supported[:12]
 
@@ -1359,6 +1434,12 @@ class MainWindow(QMainWindow):
 
         if self._switching:
             return
+        previous_source = getattr(self._ctx, "data_source", None)
+        previous_kind = self._current_data_source_kind()
+        previous_symbol = self._symbol_combo.currentText()
+        previous_timeframe = self._tf_combo.currentText()
+        previous_bars = self._last_frame_ready_bars
+        new_source = None
         self._switching = True
         try:
             self._cancel_analysis_worker()
@@ -1367,7 +1448,6 @@ class MainWindow(QMainWindow):
                 self._update_submit_button_state()
 
             self._stop_refresh_loop()
-            self._disconnect_data_source(getattr(self._ctx, "data_source", None))
 
             self._last_frame_ready_bars = None
 
@@ -1402,14 +1482,23 @@ class MainWindow(QMainWindow):
                     else "15m"
                 )
 
-            new_source = create_data_source(kind)
+            new_source = create_data_source(kind, self._ctx.settings)
             # Wire auto-probe status callback for TV
             from pa_agent.data.tradingview import TradingViewSource
             if isinstance(new_source, TradingViewSource):
                 new_source.on_probe_status = self._on_tv_probe_status
             new_source.connect()
             self._apply_tv_exchange_to_source(new_source)
-            new_source.subscribe(symbol, timeframe)
+            supported = new_source.supported_timeframes()
+            if timeframe not in supported and supported:
+                timeframe = "1d" if "1d" in supported else supported[0]
+            try:
+                new_source.subscribe(symbol, timeframe)
+            except Exception:
+                self._disconnect_data_source(new_source)
+                raise
+
+            self._disconnect_data_source(getattr(self._ctx, "data_source", None))
 
             self._ctx.data_source = new_source
 
@@ -1443,7 +1532,7 @@ class MainWindow(QMainWindow):
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("Failed to persist data source: %s", exc)
 
-            label = data_source_label(kind)
+            label = data_source_label(kind, self._ctx.settings)
             if kind == "tradingview":
                 ex_display = self._tv_exchange_text() or "自动"
                 self._status_bar.showMessage(
@@ -1463,6 +1552,23 @@ class MainWindow(QMainWindow):
             )
             self._update_symbol_data_alert()
             self._refresh_chart_once()
+        except Exception:
+            if new_source is not None and new_source is not previous_source:
+                self._disconnect_data_source(new_source)
+            self._ctx.data_source = previous_source
+            self._active_data_source_kind = previous_kind
+            self._last_frame_ready_bars = previous_bars
+            self._symbol_combo.blockSignals(True)
+            self._symbol_combo.setCurrentText(previous_symbol)
+            self._symbol_combo.blockSignals(False)
+            self._populate_timeframe_combo_for_source()
+            self._tf_combo.blockSignals(True)
+            self._tf_combo.setCurrentText(previous_timeframe)
+            self._tf_combo.blockSignals(False)
+            self._sync_tv_exchange_visibility()
+            self._apply_data_source_symbol_placeholder()
+            self._select_data_source_kind(previous_kind, switch=False)
+            raise
         finally:
             self._switching = False
             self._update_submit_button_state()
@@ -4644,6 +4750,7 @@ class MainWindow(QMainWindow):
                 pending_writer=pending_writer,
                 exp_reader=exp_reader,
                 settings=settings,
+                information_context=getattr(self._ctx, "information_context", []),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not build orchestrator: %s", exc)

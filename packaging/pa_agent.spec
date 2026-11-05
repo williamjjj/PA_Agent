@@ -11,7 +11,7 @@ datas += collect_data_files('akshare') + collect_data_files('curl_cffi')
 datas += collect_data_files('pa_agent.quant', include_py_files=True)
 for package in ('pa-agent', 'tiktoken', 'openai', 'jsonschema', 'jsonschema-specifications',
                 'PyQt6', 'PyQt6-Qt6', 'numpy', 'pandas', 'cryptography', 'akshare',
-                'curl_cffi', 'yfinance'):
+                'curl_cffi', 'yfinance', 'mcp', 'httpx-sse'):
     datas += copy_metadata(package)
 hiddenimports = collect_submodules('pa_agent') + collect_submodules('tiktoken_ext')
 hiddenimports += ['tvDatafeed','MetaTrader5','win32api','win32job','win32crypt',

@@ -16,6 +16,7 @@ class AppContext:
 
     # Data layer
     data_source: Any = None       # DataSource implementation
+    information_context: list[dict] = field(default_factory=list)
 
     # AI / orchestration layer
     client: Any = None            # DeepSeekClient
@@ -74,9 +75,9 @@ class AppContext:
 
         apply_kline_adjust_from_settings(settings)
         ds_kind = normalize_data_source_kind(
-            getattr(settings.general, "last_data_source", "mt5")
+            getattr(settings.general, "last_data_source", "mt5"), settings
         )
-        data_source = create_data_source(ds_kind)
+        data_source = create_data_source(ds_kind, settings)
 
         # Subscribe to the last-used symbol/timeframe from settings
         try:

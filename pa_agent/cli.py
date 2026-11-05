@@ -95,9 +95,13 @@ def analyze(args, cancel):
     chart["dataset_hash"] = dataset_hash(chart)
     exp = ExperienceReader(experience_dir=EXPERIENCE_DIR)
     writer = PendingWriter(pending_dir=RECORDS_PENDING_DIR, api_key=settings.provider.api_key)
+    information = []
+    for path in getattr(args, "information", []) or []:
+        information.append(_read_json(path))
     engine = TwoStageOrchestrator(create_ai_client(settings.provider),
                                  PromptAssembler(PROMPT_DIR, experience_reader=exp, prompt_settings=settings.prompt),
-                                 route_strategy_files, JsonValidator(settings), writer, exp, settings)
+                                 route_strategy_files, JsonValidator(settings), writer, exp, settings,
+                                 information_context=information)
     record = engine.submit(frame, cancel, lambda event: print(event.name, file=sys.stderr, flush=True))
     result = writer._sanitize(record.model_dump(), settings.provider.api_key)
     return {"ok":record.exception is None, "record":result,
@@ -116,12 +120,18 @@ def main(argv=None) -> int:
     integrate = sub.add_parser("integrate", help="为本地 harness 安装 PA Agent 调用技能")
     integrate.add_argument("--target", choices=["all","codex","workbuddy","hermes"], default="all")
     gui = sub.add_parser("gui", help="打开桌面版")
+    sources = sub.add_parser("sources", help="列出、测试数据源，或读取 API / MCP 资讯")
+    sources.add_argument("--id", help="指定数据源 ID")
+    sources.add_argument("--tools", action="store_true", help="读取 MCP 工具列表")
+    sources.add_argument("--query", default="", help="查询资讯；数据源 ID 必填")
+    sources.add_argument("--test", action="store_true", help="读取 100 根行情或测试资讯")
+    sources.add_argument("--output", help="将结果保存为 JSON")
     for command in ("analyze", "factors", "research", "mine"):
         item = sub.add_parser(command)
         source = item.add_mutually_exclusive_group(required=True)
         source.add_argument("--input", help="CSV 或冻结数据集 JSON")
         source.add_argument("--demo", action="store_true", help="模拟数据，非真实行情")
-        source.add_argument("--source", choices=["mt5","tradingview","ashare","akshare","tushare","yfinance"])
+        source.add_argument("--source", help="内置数据源名称或 sources 命令列出的自定义 ID")
         item.add_argument("--symbol", default="BTCUSD")
         item.add_argument("--timeframe", default="1h")
         item.add_argument("--exchange", default="OANDA")
@@ -132,12 +142,47 @@ def main(argv=None) -> int:
             item.add_argument("--backend", choices=["api","codex","workbuddy","hermes"])
             item.add_argument("--model", default="")
             item.add_argument("--executable", default="")
+            item.add_argument("--information", action="append", default=[], help="附加 sources --query 保存的资讯 JSON，可重复使用")
     args = parser.parse_args(argv)
     if args.command == "gui":
         from pa_agent.main import main as launch
         return launch([sys.argv[0]])
     try:
-        if args.command == "integrate":
+        if args.command == "sources":
+            from pa_agent.config.settings import load_settings
+            from pa_agent.data.factory import create_data_source, data_source_choices, default_symbol_for_kind, source_profile
+            settings = load_settings()
+            profile = source_profile(args.id, settings)
+            if args.tools:
+                if profile is None or not profile.transport.startswith("mcp_"):
+                    raise ValueError("请指定 MCP 数据源 ID。")
+                from pa_agent.data.connections import mcp_request
+                result = {"tools": mcp_request(profile, discover=True)}
+            elif args.query or (args.test and profile and profile.category == "information"):
+                if profile is None:
+                    raise ValueError("请指定资讯数据源 ID。")
+                from pa_agent.data.information import query_information
+                result = query_information(profile, args.query or "近期市场新闻", profile.symbol, profile.timeframe)
+            elif args.test:
+                if not args.id:
+                    raise ValueError("请指定数据源 ID。")
+                from dataclasses import asdict
+                source = create_data_source(args.id, settings)
+                try:
+                    source.connect()
+                    source.subscribe(default_symbol_for_kind(args.id, settings), profile.timeframe if profile else "1d")
+                    bars = source.latest_snapshot(100)
+                    result = {"ok": bool(bars), "bars": [asdict(bar) for bar in bars]}
+                finally:
+                    source.disconnect()
+            else:
+                result = {"market": [{"id": key, "name": name} for key, name in data_source_choices(settings=settings)],
+                          "information": [{"id": p.id, "name": p.name} for p in settings.data_sources.profiles if p.enabled and p.category == "information"]}
+            if args.output:
+                from pa_agent.quant.local import atomic_json
+                atomic_json(Path(args.output), result)
+                result = {"ok": result.get("ok", True), "output": str(Path(args.output).resolve())}
+        elif args.command == "integrate":
             from pa_agent.integrations import install_skills
             result = {"integrations":install_skills(args.target)}
         elif args.command == "doctor":

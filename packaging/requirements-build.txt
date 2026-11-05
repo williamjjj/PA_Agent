@@ -89,3 +89,12 @@ websocket-client==1.9.2
 websockets==17.4
 xlrd==2.0.2
 yfinance==1.7.0
+httpx-sse==0.4.3
+mcp==1.30.0
+pydantic-settings==2.16.2
+pyjwt==2.15.1
+python-dotenv==1.2.4
+python-multipart==0.0.33
+sse-starlette==3.6.0
+starlette==1.10.0
+uvicorn==0.54.0
