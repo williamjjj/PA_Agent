@@ -23,7 +23,8 @@ LicenseFile=..\LICENSE
 UninstallDisplayIcon={app}\PA-Agent.exe
 
 [Files]
-Source: "..\dist\PA-Agent\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "portable.flag,data\*"
+; Match the root user-data folder only; provider packages also contain data/.
+Source: "..\dist\PA-Agent\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "\portable.flag,\data\*"
 
 [Icons]
 Name: "{group}\PA Agent"; Filename: "{app}\PA-Agent.exe"; WorkingDir: "{app}"
