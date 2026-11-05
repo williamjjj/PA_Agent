@@ -120,6 +120,11 @@ def main(argv=None) -> int:
     integrate = sub.add_parser("integrate", help="为本地 harness 安装 PA Agent 调用技能")
     integrate.add_argument("--target", choices=["all","codex","workbuddy","hermes"], default="all")
     gui = sub.add_parser("gui", help="打开桌面版")
+    export = sub.add_parser("export", help="导出已保存的分析结果和各环节")
+    export.add_argument("--record", required=True, help="分析记录 JSON 或 analyze 命令结果")
+    export.add_argument("--output", required=True, help="目标 .zip / .html / .md / .json")
+    export.add_argument("--sections", help="逗号分隔环节 ID，省略时导出全部")
+    export.add_argument("--overwrite", action="store_true", help="允许覆盖已有导出文件")
     sources = sub.add_parser("sources", help="列出、测试数据源，或读取 API / MCP 资讯")
     sources.add_argument("--id", help="指定数据源 ID")
     sources.add_argument("--tools", action="store_true", help="读取 MCP 工具列表")
@@ -148,7 +153,17 @@ def main(argv=None) -> int:
         from pa_agent.main import main as launch
         return launch([sys.argv[0]])
     try:
-        if args.command == "sources":
+        if args.command == "export":
+            from pa_agent.records.exporter import read_record, build_export, write_export, configured_secrets
+            from pa_agent.config.settings import load_settings
+            source, output = Path(args.record), Path(args.output)
+            if source.resolve() == output.resolve():
+                raise ValueError("请使用新的文件名，保留原始分析记录。")
+            record, followups, warnings = read_record(source)
+            payload = build_export(record, sections=args.sections.split(",") if args.sections else None,
+                followups=followups, warnings=warnings, secrets=configured_secrets(load_settings()))
+            result = {"ok": True, **write_export(output, payload, overwrite=args.overwrite)}
+        elif args.command == "sources":
             from pa_agent.config.settings import load_settings
             from pa_agent.data.factory import create_data_source, data_source_choices, default_symbol_for_kind, source_profile
             settings = load_settings()

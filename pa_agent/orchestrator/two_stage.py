@@ -417,10 +417,27 @@ class TwoStageOrchestrator:
         """
         # ── Step 1: Build partial record ──────────────────────────────────────
         record = _build_empty_record(frame, self._settings)
+        self._active_record = record
+        self._current_stage = "stage1"
+
+        def capture_attempt(stage, messages, reply):
+            if reply is None:
+                return
+            raw = getattr(reply, "raw", None)
+            record.stage_attempts.append({
+                "stage": stage,
+                "attempt": 1 + sum(item["stage"] == stage for item in record.stage_attempts),
+                "returned_at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                "messages": copy.deepcopy(messages),
+                "response": copy.deepcopy(raw) if isinstance(raw, dict) else {},
+                "content": getattr(reply, "content", "") or "",
+                "reasoning_content": getattr(reply, "reasoning_content", "") or "",
+            })
         from pa_agent.data.information import add_information_context, selected_context
         information = selected_context(self._information_context, frame.symbol)
         if information:
             record = record.model_copy(update={"information_context": information})
+            self._active_record = record
         # Every analysis starts from the user's configured provider again.
         self._active_provider = None
         self._on_fallback_provider = False
@@ -602,6 +619,10 @@ class TwoStageOrchestrator:
             self._pending_free_meta = None
 
         if s1_primary_error is None and reply_s1 is not None:
+            capture_attempt("stage1", messages_s1, reply_s1)
+            self._active_record = record.model_copy(update={"stage1_messages": messages_s1,
+                "stage1_response": reply_s1.raw,
+                "usage_total": _accumulate_usage(record.usage_total, reply_s1.usage)})
             from pa_agent.ai.lite_output_normalize import is_local_stage1
             local_stage1 = is_local_stage1(raw=getattr(reply_s1, "raw", None))
             if not local_stage1:
@@ -658,6 +679,7 @@ class TwoStageOrchestrator:
                 if not s1_streamed_content and r.content:
                     _emit_buffered_stream(r.content, on_stage1_content)
                 s1_usage_calls.append(getattr(r, "usage", None))
+                capture_attempt("stage1", msgs, r)
                 return r
 
             try:
@@ -719,6 +741,7 @@ class TwoStageOrchestrator:
             )
             if recovered is not None:
                 reply_s1, result_s1, s1_fallback_meta = recovered
+                capture_attempt("stage1", messages_s1, reply_s1)
                 s1_primary_error = None
                 s1_usage_calls.append(getattr(reply_s1, "usage", None))
                 if s1_fallback_meta:
@@ -815,6 +838,16 @@ class TwoStageOrchestrator:
             )
         else:
             experience_entries = self._exp_reader.read_top5(cycle_position)[:max_exp]
+
+        record = record.model_copy(update={
+            "stage1_messages": messages_s1, "stage1_response": reply_s1.raw,
+            "stage1_diagnosis": stage1_json, "strategy_files_used": strategy_files,
+            "experience_loaded": [e.model_dump() if hasattr(e, "model_dump") else dict(e)
+                                  for e in experience_entries],
+        })
+        self._active_record = record.model_copy(update={
+            "usage_total": _accumulate_usage_calls(record.usage_total, s1_usage_calls)})
+        self._current_stage = "stage2"
 
         # ── Step 12: Pre-Stage-2 cancel check ────────────────────────────────
         if cancel_token.is_set():
@@ -1034,6 +1067,11 @@ class TwoStageOrchestrator:
                 raise
 
         if s2_primary_error is None and reply_s2 is not None:
+            capture_attempt("stage2", messages_s2, reply_s2)
+            self._active_record = record.model_copy(update={"stage2_messages": messages_s2,
+                "stage2_response": reply_s2.raw,
+                "usage_total": _accumulate_usage(
+                    _accumulate_usage_calls(record.usage_total, s1_usage_calls), reply_s2.usage)})
             if not s2_streamed_reasoning and reply_s2.reasoning_content:
                 _emit_buffered_stream(reply_s2.reasoning_content, on_stage2_reasoning)
             # Lite replies are raw JSON; main_window pushes a readable summary.
@@ -1096,6 +1134,7 @@ class TwoStageOrchestrator:
                 if not s2_streamed_content and r.content:
                     _emit_buffered_stream(r.content, on_stage2_content)
                 s2_usage_calls.append(getattr(r, "usage", None))
+                capture_attempt("stage2", msgs, r)
                 return r
 
             try:
@@ -1162,6 +1201,7 @@ class TwoStageOrchestrator:
             )
             if recovered is not None:
                 reply_s2, result_s2, s2_fallback_meta = recovered
+                capture_attempt("stage2", messages_s2, reply_s2)
                 s2_primary_error = None
                 s2_usage_calls.append(getattr(reply_s2, "usage", None))
                 if s2_fallback_meta:

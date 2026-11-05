@@ -159,17 +159,21 @@ class _AnalysisWorker(QThread):
             pending_writer = getattr(self._orchestrator, "_pending_writer", None)
             if pending_writer is None:
                 return None
-            record = _build_empty_record(self._frame, settings)
+            from pa_agent.records.schema import AnalysisRecord
+            from pa_agent.ai.deepseek_client import CancelledError
+            active = getattr(self._orchestrator, "_active_record", None)
+            record = active if isinstance(active, AnalysisRecord) else _build_empty_record(self._frame, settings)
+            kind = "user_cancelled" if isinstance(exc, CancelledError) else "program_error"
             record = record.model_copy(
                 update={
                     "exception": {
-                        "type": "program_error",
-                        "stage": "unknown",
+                        "type": kind,
+                        "stage": getattr(self._orchestrator, "_current_stage", "unknown"),
                         "message": str(exc),
                     }
                 }
             )
-            pending_writer.save_partial(record, "program_error")
+            pending_writer.save_partial(record, kind)
             return record
         except Exception as save_exc:  # noqa: BLE001
             logger.warning("Failed to persist program_error record: %s", save_exc)
@@ -245,7 +249,7 @@ class _AnalysisWorker(QThread):
             if isinstance(exc, _CancelledError):
                 logger.info("Analysis worker cancelled: %s", exc)
                 decision = {}
-                record = None  # type: ignore[assignment]
+                record = self._persist_program_error_record(exc)
             else:
                 logger.error("Analysis worker error: %s", exc, exc_info=True)
                 decision = {}
@@ -394,6 +398,10 @@ class MainWindow(QMainWindow):
         information_action.triggered.connect(self._open_information_dialog)
         menu_bar.addAction(information_action)
 
+        export_action = QAction("导出分析", self)
+        export_action.triggered.connect(self._open_analysis_export)
+        menu_bar.addAction(export_action)
+
         quant_action = QAction("AlphaGPT 量化研究", self)
         quant_action.triggered.connect(self._open_quant_dialog)
         menu_bar.addAction(quant_action)
@@ -416,6 +424,13 @@ class MainWindow(QMainWindow):
         from pa_agent.gui.quant_dialog import QuantDialog
         dialog = QuantDialog(getattr(self._chart_widget, "_latest_frame", None),
                              source=self._current_data_source_kind(), parent=self)
+        dialog.exec()
+
+    def _open_analysis_export(self) -> None:
+        from pa_agent.gui.export_dialog import AnalysisExportDialog
+        dialog = AnalysisExportDialog(
+            self._last_analysis_record, current_path=self._demo_record_path if self._demo_mode else None,
+            settings=self._ctx.settings, running=self._analysis_in_progress, parent=self)
         dialog.exec()
 
     def _reload_data_source_choices(self) -> None:

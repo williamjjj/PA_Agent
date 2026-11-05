@@ -42,6 +42,7 @@ class AnalysisRecord(BaseModel):
     exception: Optional[dict]           # If error occurred: category + debug info
     usage_total: dict                   # Cumulative usage for audit
     information_context: list[dict] = Field(default_factory=list)
+    stage_attempts: list[dict] = Field(default_factory=list)
 
 
 class FollowupTurn(BaseModel):
