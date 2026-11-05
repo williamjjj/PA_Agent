@@ -22,6 +22,7 @@ PLAN = {
 
 @pytest.fixture(scope="module")
 def qapp():
+    __import__("pytest").skip("Desktop Qt UI is not shipped by the web branch")
     from PyQt6.QtWidgets import QApplication
     return QApplication.instance() or QApplication([])
 

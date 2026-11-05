@@ -60,7 +60,7 @@ def test_unchanged_plan_keeps_model_text():
 
 def test_reason_text_stored_even_for_legacy_style_records():
     """老记录在界面渲染时仍会修复，不依赖重新分析。"""
-    from pa_agent.gui.stage2_payload import prepare_stage2_for_ui
+    from pa_agent.web.presentation.stage2_payload import prepare_stage2_for_ui
     legacy = {"trace_source": "local_rules",
               "decision": {"order_type": "不下单", "reasoning": TRADE_TEXT}}
     shown = prepare_stage2_for_ui(legacy)

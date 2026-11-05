@@ -34,6 +34,7 @@ def test_validator_fills_diagnosis_cycle_from_structure():
 
 
 def test_panel_chip_has_no_unknown_cycle():
+    __import__("pytest").skip("Desktop Qt UI is not shipped by the web branch")
     from PyQt6.QtWidgets import QApplication
     from pa_agent.gui.decision_panel import DecisionPanel
     app = QApplication.instance() or QApplication([])
@@ -48,6 +49,7 @@ def test_panel_chip_has_no_unknown_cycle():
 
 
 def test_main_window_replaces_legacy_unknown_cycle():
+    __import__("pytest").skip("Desktop Qt UI is not shipped by the web branch")
     from types import SimpleNamespace
     from unittest.mock import MagicMock
     from PyQt6.QtWidgets import QApplication

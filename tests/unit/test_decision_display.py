@@ -3,7 +3,7 @@ import json
 
 from pa_agent.ai.decision_display import reconcile_lite_decision
 from pa_agent.ai.json_validator import JsonValidator, Ok
-from pa_agent.gui.stage2_payload import prepare_stage2_for_ui
+from pa_agent.web.presentation.stage2_payload import prepare_stage2_for_ui
 from pa_agent.util.trade_metrics import validate_take_profit_2_geometry
 from tests.unit.test_glm_flash_lite import payload
 
@@ -110,6 +110,7 @@ def test_pure_entry_instruction_still_gets_placeholder():
 
 
 def test_compact_decision_details_and_no_fabricated_default_score():
+    __import__("pytest").skip("Desktop Qt UI is not shipped by the web branch")
     from PyQt6.QtWidgets import QApplication
     from pa_agent.gui.decision_panel import DecisionPanel
     app = QApplication.instance() or QApplication([])

@@ -220,7 +220,7 @@ def _build_empty_record(
 ) -> AnalysisRecord:
     """Build a partial AnalysisRecord with meta populated from the frame."""
     ts_ms = now_local_ms()
-    ts_iso = datetime.fromtimestamp(ts_ms / 1000).isoformat(timespec="milliseconds")
+    ts_iso = datetime.fromtimestamp(ts_ms / 1000).astimezone().isoformat(timespec="milliseconds")
 
     # Build masked provider snapshot
     ai_provider: dict[str, Any] = {}
@@ -1309,14 +1309,8 @@ class TwoStageOrchestrator:
         return p.thinking, p.reasoning_effort
 
     def _sensenova_free_eligible(self) -> bool:
-        """True when configured base_url is the SenseNova token gateway."""
-        from pa_agent.ai.sensenova_fallback import is_sensenova_fallback_eligible
-
-        if self._settings is None:
-            return False
-        return is_sensenova_fallback_eligible(
-            getattr(self._settings.provider, "base_url", "")
-        )
+        # Web tenants never inherit the desktop's shared/free fallback pool.
+        return False
 
     def _primary_api_key(self) -> str:
         if self._settings is None:
@@ -1570,347 +1564,25 @@ class TwoStageOrchestrator:
 
         return is_glm_flash(self._provider())
 
-    def _stream_chat_resilient(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        on_reasoning_token: Callable[[str], None] | None,
-        on_content_token: Callable[[str], None] | None,
-        cancel_token: CancelToken,
-        thinking: bool,
-        reasoning_effort: str,
-        stage_label: str,
-        frame: KlineFrame | None = None,
-        free_lane: Callable[[BaseException], Any] | None = None,
-        free_lane_state: dict[str, bool] | None = None,
-        on_progress: Callable[[str], None] | None = None,
-    ) -> Any:
-        """Call stream_chat with layered fallbacks.
-
-        Layer 0: spare channel (``free_lane``), tried once, only when supplied.
-        Layer 1: settings.provider.fallbacks chain (any non-cancel exception).
-        Layer 2: on network error, WorkBuddy / TRAE Work CN / QClaw for openclaw_* models.
-        Provider-chain switching is in-memory only; settings.json is never rewritten.
-        """
-        original_model = (
-            self._settings.provider.model if self._settings is not None else ""
-        )
-        tried_qclaw = False
-        tried_workbuddy = False
-        tried_trae_cn = False
-        tried_provider_keys: set[tuple[str, str]] = set()
-        last_provider_exc: Exception | None = None
-        #: The spare model (sensenova-6.8-flash-lite) is attempted at most once
-        #: per call; it only answers rate limits, never other failures.
-        tried_spare_model = False
-        # Capture the fallback chain once. After a successful switch,
-        # settings.provider points at the fallback candidate (whose own
-        # fallbacks list is empty), so re-reading it inside the loop would
-        # lose the remaining candidates.
-        if self._settings is not None:
-            from pa_agent.ai.glm_backup import ensure_glm_fallback
-
-            # SenseNova primary + configured GLM key => glm-4-flash backup.
-            ensure_glm_fallback(self._settings.provider)
-        provider_fallback_chain = (
-            list(getattr(self._settings.provider, "fallbacks", []) or [])
-            if self._settings is not None else []
-        )
-        while True:
-            lite = self._glm_flash_lite()
-            if lite:
-                from pa_agent.ai.glm_flash_lite import build_messages, local_diagnosis
-                if frame is None:
-                    raise ValueError("备用通道精简分析缺少K线快照")
-                stage = "stage1" if stage_label == "Stage 1" else "stage2"
-                # Mutate the audit list too: record what was actually sent,
-                # including when the primary failed midway through this call.
-                messages[:] = build_messages(frame, stage)
-                if stage == "stage1":
-                    import json
-                    from pa_agent.ai.deepseek_client import AIReply, AIUsage
-                    context = local_diagnosis(frame)
-                    return AIReply(
-                        content=json.dumps(context, ensure_ascii=False),
-                        reasoning_content="", raw={"source": "local_compatibility", "context": context},
-                        usage=AIUsage(), request_id="local-stage1", latency_ms=0,
-                    )
-            try:
-                return self._client.stream_chat(
-                    messages,
-                    on_reasoning_token=on_reasoning_token,
-                    on_content_token=on_content_token,
-                    cancel_token=cancel_token,
-                    thinking=False if lite else thinking,
-                    reasoning_effort="low" if lite else reasoning_effort,
-                )
-            except Exception as exc:
-                from pa_agent.ai.sensenova_fallback import is_cancel_or_interrupt
-
-                if is_cancel_or_interrupt(exc):
-                    raise
-                # Layer 0a: the spare model. Rate limits are the one failure the
-                # primary keeps hitting (tpm/rpm), and this model shares the same
-                # gateway and key while not counting against that budget. Its
-                # own quirks (user-tailed messages, 16384 shared budget) are
-                # handled inside pa_agent.ai.lite_fallback.
-                if not tried_spare_model:
-                    from pa_agent.ai.rate_limit import is_rate_limit_error
-
-                    if is_rate_limit_error(exc):
-                        tried_spare_model = True
-                        from pa_agent.ai.lite_fallback import try_lite_stage
-
-                        reply_spare = try_lite_stage(
-                            messages,
-                            api_key=self._primary_api_key(),
-                            base_url=getattr(self._provider(), "base_url", ""),
-                            cancel_token=cancel_token,
-                            on_reasoning_token=on_reasoning_token,
-                            on_content_token=on_content_token,
-                            on_progress=on_progress,
-                        )
-                        if reply_spare is not None:
-                            return reply_spare
-                # Layer 0b: spare channel. Preferred over the configured provider
-                # chain because it costs nothing and usually answers faster than
-                # moving the whole session onto another paid provider. The lane
-                # validates internally and returns (reply, Ok, meta) only when a
-                # candidate passed, so a failure here falls through unchanged.
-                if (
-                    free_lane is not None
-                    and free_lane_state is not None
-                    and not free_lane_state.get("tried")
-                ):
-                    free_lane_state["tried"] = True
-                    recovered = None
-                    try:
-                        recovered = free_lane(exc)
-                    except Exception as lane_exc:  # noqa: BLE001
-                        if is_cancel_or_interrupt(lane_exc):
-                            raise
-                        logger.warning(
-                            "%s spare-channel attempt failed: %s", stage_label, lane_exc
-                        )
-                    if recovered is not None:
-                        reply_free = recovered[0]
-                        self._pending_free_meta = recovered[2]
-                        return reply_free
-                # Layer 1: generic provider chain. Triggers on any non-cancel
-                # exception (network / 429 / 5xx / timeout). In-memory only.
-                if self._try_next_provider_fallback(
-                    tried_keys=tried_provider_keys,
-                    fallback_chain=provider_fallback_chain,
-                    stage_label=stage_label,
-                    exc=exc,
-                ):
-                    last_provider_exc = exc
-                    continue
-                # Layer 2: openclaw_* network routing (unchanged).
-                if not self._is_network_error(exc):
-                    raise last_provider_exc or exc
-                # Try WorkBuddy fallback first (if model is openclaw_wb),
-                # then TRAE Work CN (if model is openclaw_twc),
-                # then QClaw fallback (if model is openclaw)
-                if not tried_workbuddy and self._try_workbuddy_fallback(
-                    original_model=original_model
-                ):
-                    tried_workbuddy = True
-                    logger.info(
-                        "%s network error (%s); applied WorkBuddy provider — retrying",
-                        stage_label,
-                        exc,
-                    )
-                elif not tried_trae_cn and self._try_trae_cn_fallback(
-                    original_model=original_model
-                ):
-                    tried_trae_cn = True
-                    logger.info(
-                        "%s network error (%s); applied TRAE Work CN provider — retrying",
-                        stage_label,
-                        exc,
-                    )
-                elif not tried_qclaw and self._try_qclaw_fallback(
-                    original_model=original_model
-                ):
-                    tried_qclaw = True
-                    logger.info(
-                        "%s network error (%s); applied QClaw provider — retrying",
-                        stage_label,
-                        exc,
-                    )
-                else:
-                    raise last_provider_exc or exc
-
-    def _try_next_provider_fallback(
-        self,
-        *,
-        tried_keys: set[tuple[str, str]],
-        fallback_chain: list[Any],
-        stage_label: str,
-        exc: Exception,
-    ) -> bool:
-        """Switch the in-memory client to the next unused provider in the chain.
-
-        Returns True when a fallback was applied (caller should retry), False
-        when the chain is exhausted. settings.json is never touched: the switch
-        is session-scoped so a transient outage cannot permanently rewrite the
-        user's primary provider configuration.
-
-        fallback_chain is passed explicitly because the active provider changes
-        on each successful switch; re-reading it would lose the remaining
-        candidates after the first switch.
-        """
-        if self._settings is None:
-            return False
-        fallbacks = list(fallback_chain or [])
-        if not fallbacks:
-            return False
-        cur = self._provider()
-        tried_keys.add((str(cur.base_url or "").strip(), str(cur.model or "").strip()))
-        for cand in fallbacks:
-            key = (str(cand.base_url or "").strip(), str(cand.model or "").strip())
-            if key in tried_keys:
-                continue
-            if not (str(cand.api_key or "").strip()):
-                logger.warning(
-                    "%s provider fallback skipped (empty api_key): model=%s base_url=%s",
-                    stage_label,
-                    cand.model,
-                    cand.base_url,
-                )
-                tried_keys.add(key)
-                continue
-            tried_keys.add(key)
-            logger.warning(
-                "%s provider error (%s); switching to fallback model=%s base_url=%s",
-                stage_label,
-                type(exc).__name__,
-                cand.model,
-                cand.base_url,
-            )
-            try:
-                self._client.update_provider(cand)
-            except Exception as swap_exc:  # noqa: BLE001
-                logger.warning(
-                    "%s provider fallback client update failed: %s",
-                    stage_label,
-                    swap_exc,
-                )
-                continue
-            self._active_provider = cand
-            self._on_fallback_provider = True
-            return True
-        return False
-
-    def _try_qclaw_fallback(self, *, original_model: str = "") -> bool:
-        """Apply local QClaw provider (like settings Save with model=openclaw)."""
-        from pa_agent.ai.qclaw_connector import (
-            apply_qclaw_provider_to_settings,
-            is_openclaw_model,
-        )
-        from pa_agent.config.paths import SETTINGS_JSON_PATH
-
-        if not is_openclaw_model(original_model):
-            return False
-        if self._settings is None:
-            return False
-
-        from pa_agent.config.settings import save_settings
-        from pa_agent.util.logging import update_api_key
-
-        err = apply_qclaw_provider_to_settings(self._settings)
-        if err:
-            logger.warning("QClaw auto-fallback unavailable: %s", err)
-            return False
-
-        self._client.update_provider(self._settings.provider)
-        try:
-            save_settings(self._settings, SETTINGS_JSON_PATH)
-            update_api_key(self._settings.provider.api_key)
-        except Exception as save_exc:  # noqa: BLE001
-            logger.warning("QClaw fallback applied but settings save failed: %s", save_exc)
-
-        logger.info(
-            "QClaw auto-fallback: model=%s base_url=%s",
-            self._settings.provider.model,
-            self._settings.provider.base_url,
-        )
-        return True
-
-    def _try_workbuddy_fallback(self, *, original_model: str = "") -> bool:
-        """Apply WorkBuddy provider (like settings Save with model=openclaw_wb)."""
-        from pa_agent.ai.workbuddy_connector import (
-            apply_workbuddy_provider_to_settings,
-            is_openclaw_wb_model,
-        )
-        from pa_agent.config.paths import SETTINGS_JSON_PATH
-
-        if not is_openclaw_wb_model(original_model):
-            return False
-        if self._settings is None:
-            return False
-
-        from pa_agent.config.settings import save_settings
-        from pa_agent.util.logging import update_api_key
-
-        err = apply_workbuddy_provider_to_settings(self._settings)
-        if err:
-            logger.warning("WorkBuddy auto-fallback unavailable: %s", err)
-            return False
-
-        self._client.update_provider(self._settings.provider)
-        try:
-            save_settings(self._settings, SETTINGS_JSON_PATH)
-            update_api_key(self._settings.provider.api_key)
-        except Exception as save_exc:  # noqa: BLE001
-            logger.warning("WorkBuddy fallback applied but settings save failed: %s", save_exc)
-
-        logger.info(
-            "WorkBuddy auto-fallback: model=%s base_url=%s",
-            self._settings.provider.model,
-            self._settings.provider.base_url,
-        )
-        return True
-
-    def _try_trae_cn_fallback(self, *, original_model: str = "") -> bool:
-        """Apply TRAE Work CN provider (like settings Save with model=openclaw_twc)."""
-        from pa_agent.ai.trae_connector import (
-            apply_trae_cn_provider_to_settings,
-            is_openclaw_twc_model,
-        )
-        from pa_agent.config.paths import SETTINGS_JSON_PATH
-
-        if not is_openclaw_twc_model(original_model):
-            return False
-        if self._settings is None:
-            return False
-
-        from pa_agent.config.settings import save_settings
-        from pa_agent.util.logging import update_api_key
-
-        err = apply_trae_cn_provider_to_settings(
-            self._settings, preferred_model=original_model
-        )
-        if err:
-            logger.warning("TRAE Work CN auto-fallback unavailable: %s", err)
-            return False
-
-        self._client.update_provider(self._settings.provider)
-        try:
-            save_settings(self._settings, SETTINGS_JSON_PATH)
-            update_api_key(self._settings.provider.api_key)
-        except Exception as save_exc:  # noqa: BLE001
-            logger.warning(
-                "TRAE Work CN fallback applied but settings save failed: %s", save_exc
-            )
-
-        logger.info(
-            "TRAE Work CN auto-fallback: model=%s base_url=%s",
-            self._settings.provider.model,
-            self._settings.provider.base_url,
-        )
-        return True
+    def _stream_chat_resilient(self, messages, *, stage_label,
+                               frame=None, free_lane=None, free_lane_state=None,
+                               on_progress=None, **kwargs):
+        """Use only the authenticated account's configured ModelClient."""
+        if self._glm_flash_lite():
+            from pa_agent.ai.glm_flash_lite import build_messages, local_diagnosis
+            from pa_agent.ai.deepseek_client import AIReply, AIUsage
+            import json
+            if frame is None:
+                raise ValueError("精简分析缺少 K 线快照")
+            stage = "stage1" if stage_label == "Stage 1" else "stage2"
+            messages[:] = build_messages(frame, stage)
+            if stage == "stage1":
+                context = local_diagnosis(frame)
+                return AIReply(content=json.dumps(context, ensure_ascii=False), reasoning_content="",
+                               raw={"source":"local_compatibility", "context":context},
+                               usage=AIUsage(), request_id="local-stage1", latency_ms=0)
+            kwargs.update(thinking=False, reasoning_effort="low")
+        return self._client.stream_chat(messages, **kwargs)
 
     @staticmethod
     def _is_network_error(exc: Exception) -> bool:

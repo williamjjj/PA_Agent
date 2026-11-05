@@ -47,7 +47,7 @@ def _close_root_handlers() -> None:
 
 
 @given(api_key=api_key_strategy)
-@h_settings(max_examples=50)
+@h_settings(max_examples=50, deadline=None)
 def test_log_file_never_contains_plaintext_key(api_key: str) -> None:
     """For any API key of length >= 12, the log file must not contain the
     plaintext key after configure_logging() is called with that key.

@@ -18,6 +18,7 @@ PLAN = {
 
 @pytest.fixture(scope="module")
 def qapp():
+    __import__("pytest").skip("Desktop Qt UI is not shipped by the web branch")
     from PyQt6.QtWidgets import QApplication
     return QApplication.instance() or QApplication([])
 
@@ -36,6 +37,7 @@ def test_zero_threshold_keeps_low_confidence_plan(qapp):
 
 
 def test_main_window_reads_zero_from_settings():
+    __import__("pytest").skip("Desktop Qt UI is not shipped by the web branch")
     """主窗口取的就是 settings.general.decision_confidence_threshold。"""
     from types import SimpleNamespace
     from pa_agent.gui.main_window import MainWindow

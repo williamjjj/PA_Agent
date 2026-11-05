@@ -49,7 +49,8 @@ def test_connect_uses_settings_token_before_environment(monkeypatch: pytest.Monk
     source = TushareSource(settings=Settings(tushare={"token": "settings-token"}))
     source.connect()
 
-    assert calls == ["settings-token"]
+    assert calls == []
+    assert source._configured_token() == "settings-token"
 
 
 def test_latest_snapshot_fetches_daily_bars(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,11 +82,11 @@ def test_latest_snapshot_fetches_daily_bars(monkeypatch: pytest.MonkeyPatch) -> 
             ]
         )
 
-    fake_tushare = types.SimpleNamespace(set_token=fake_set_token, pro_bar=fake_pro_bar)
+    fake_tushare = types.SimpleNamespace(set_token=fake_set_token, pro_bar=fake_pro_bar, pro_api=lambda token: token)
     monkeypatch.setitem(sys.modules, "tushare", fake_tushare)
-    monkeypatch.setenv("TUSHARE_TOKEN", "test-token")
+    monkeypatch.setenv("TUSHARE_TOKEN", "other-account-env-token")
 
-    source = TushareSource()
+    source = TushareSource(settings=Settings(tushare={"token": "test-token"}))
     source.connect()
     source.subscribe("600519", "1d")
 
@@ -93,8 +94,9 @@ def test_latest_snapshot_fetches_daily_bars(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert [b.close for b in bars] == [10.5, 8.5]
     assert all(b.closed for b in bars)
-    assert calls[1]["ts_code"] == "600519.SH"
-    assert calls[1]["adj"] == "qfq"
+    assert calls[0]["api"] == "test-token"
+    assert calls[0]["ts_code"] == "600519.SH"
+    assert calls[0]["adj"] == "qfq"
 
 
 def test_latest_snapshot_uses_cache(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -116,11 +118,11 @@ def test_latest_snapshot_uses_cache(monkeypatch: pytest.MonkeyPatch) -> None:
             ]
         )
 
-    fake_tushare = types.SimpleNamespace(set_token=lambda token: None, pro_bar=fake_pro_bar)
+    fake_tushare = types.SimpleNamespace(set_token=lambda token: None, pro_bar=fake_pro_bar, pro_api=lambda token: token)
     monkeypatch.setitem(sys.modules, "tushare", fake_tushare)
-    monkeypatch.setenv("TUSHARE_TOKEN", "test-token")
+    monkeypatch.setenv("TUSHARE_TOKEN", "other-account-env-token")
 
-    source = TushareSource()
+    source = TushareSource(settings=Settings(tushare={"token": "test-token"}))
     source.connect()
     source.subscribe("600519", "1d")
 
@@ -169,9 +171,9 @@ def test_latest_snapshot_fetches_minute_bars(
         pro_api=lambda token=None: FakeApi(),
     )
     monkeypatch.setitem(sys.modules, "tushare", fake_tushare)
-    monkeypatch.setenv("TUSHARE_TOKEN", "test-token")
+    monkeypatch.setenv("TUSHARE_TOKEN", "other-account-env-token")
 
-    source = TushareSource()
+    source = TushareSource(settings=Settings(tushare={"token": "test-token"}))
     source.connect()
     source.subscribe("600519", timeframe)
     bars = source.latest_snapshot(2)
@@ -192,11 +194,17 @@ def test_minute_rate_limit_error_is_user_facing(monkeypatch: pytest.MonkeyPatch)
         pro_api=lambda token=None: FakeApi(),
     )
     monkeypatch.setitem(sys.modules, "tushare", fake_tushare)
-    monkeypatch.setenv("TUSHARE_TOKEN", "test-token")
+    monkeypatch.setenv("TUSHARE_TOKEN", "other-account-env-token")
 
-    source = TushareSource()
+    source = TushareSource(settings=Settings(tushare={"token": "test-token"}))
     source.connect()
     source.subscribe("600519", "5m")
 
     with pytest.raises(DataSourceTransientError, match="限频"):
         source.latest_snapshot(2)
+
+
+def test_environment_token_is_not_used_for_another_account(monkeypatch):
+    monkeypatch.setenv("TUSHARE_TOKEN", "another-account-secret")
+    with pytest.raises(DataSourceTransientError):
+        TushareSource(settings=Settings()).connect()

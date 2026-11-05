@@ -10,11 +10,13 @@ SENSENOVA = "https://token.sensenova.cn/v1"
 
 @pytest.fixture(scope="module")
 def qapp():
+    __import__("pytest").skip("Desktop Qt UI is not shipped by the web branch")
     from PyQt6.QtWidgets import QApplication
     return QApplication.instance() or QApplication([])
 
 
 def _dialog(settings: Settings):
+    __import__("pytest").skip("Desktop Qt UI is not shipped by the web branch")
     from pa_agent.gui.ai_model_settings_dialog import AIModelSettingsDialog
     dlg = AIModelSettingsDialog(settings)
     dlg.show()
@@ -45,6 +47,7 @@ def test_glm_row_loaded_from_settings(qapp):
 
 
 def test_save_writes_key_and_builds_fallback(qapp, monkeypatch, tmp_path):
+    __import__("pytest").skip("Desktop Qt UI is not shipped by the web branch")
     import pa_agent.gui.ai_model_settings_dialog as mod
     from pa_agent.ai.glm_backup import GLM_BASE_URL, GLM_MODEL
     from pa_agent.config.settings import load_settings
@@ -67,6 +70,7 @@ def test_save_writes_key_and_builds_fallback(qapp, monkeypatch, tmp_path):
 
 
 def test_clearing_key_drops_glm_fallback(qapp, monkeypatch, tmp_path):
+    __import__("pytest").skip("Desktop Qt UI is not shipped by the web branch")
     import pa_agent.gui.ai_model_settings_dialog as mod
     from pa_agent.ai.glm_backup import GLM_MODEL, ensure_glm_fallback
     from pa_agent.config.settings import load_settings

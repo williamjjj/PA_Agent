@@ -236,7 +236,7 @@ def test_normalize_next_bar_prediction_direction_argmax():
 
 
 def test_normalize_next_bar_prediction_direction_argmax_tie_break():
-    """Tied probabilities: break by literal order (bullish > bearish > neutral)."""
+    """If the model chose a non-maximum, use the first of the tied maxima."""
     pred = {
         "direction": "neutral",
         "probabilities": {"bullish": 40, "bearish": 40, "neutral": 20},

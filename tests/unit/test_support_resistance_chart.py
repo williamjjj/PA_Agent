@@ -1,7 +1,7 @@
 """Tests for support/resistance chart level selection."""
 from __future__ import annotations
 
-from pa_agent.gui.support_resistance import chart_levels_from_stage1_diagnosis
+from pa_agent.web.presentation.support_resistance import chart_levels_from_stage1_diagnosis
 
 
 def test_chart_uses_farthest_support_and_resistance() -> None:

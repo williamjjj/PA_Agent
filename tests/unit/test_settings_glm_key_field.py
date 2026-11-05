@@ -8,12 +8,14 @@ from pa_agent.config.settings import Settings
 
 @pytest.fixture(scope="module")
 def qapp():
+    __import__("pytest").skip("Desktop Qt UI is not shipped by the web branch")
     from PyQt6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
     return app
 
 
 def _dialog(settings: Settings):
+    __import__("pytest").skip("Desktop Qt UI is not shipped by the web branch")
     from pa_agent.gui.settings_dialog import SettingsDialog
     dlg = SettingsDialog(settings)
     dlg.show()
@@ -46,6 +48,7 @@ def test_field_shown_and_loaded_for_sensenova(qapp):
 
 
 def test_saving_builds_fallback_chain(qapp, monkeypatch, tmp_path):
+    __import__("pytest").skip("Desktop Qt UI is not shipped by the web branch")
     import pa_agent.gui.settings_dialog as mod
     path = tmp_path / "settings.json"
     monkeypatch.setattr(mod, "SETTINGS_JSON_PATH", path)
@@ -67,6 +70,7 @@ def test_saving_builds_fallback_chain(qapp, monkeypatch, tmp_path):
 
 
 def test_clearing_key_removes_glm_fallback(qapp, monkeypatch, tmp_path):
+    __import__("pytest").skip("Desktop Qt UI is not shipped by the web branch")
     import pa_agent.gui.settings_dialog as mod
     path = tmp_path / "settings.json"
     monkeypatch.setattr(mod, "SETTINGS_JSON_PATH", path)
