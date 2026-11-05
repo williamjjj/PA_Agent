@@ -23,7 +23,7 @@ uv run uvicorn app:app --host 127.0.0.1 --port 8000
 
 ## 部署到 Vercel
 
-本次选择不部署常驻 Worker 的网页试用方案，账号关联、网页分支、数据库与 Preview 配置见 [Vercel 试用指南](docs/VERCEL_TRIAL.md)。
+`main` 是用于 Vercel Production 的网页版；`codex/web-multiuser-vercel` 保留网页版 Preview。桌面版继续位于 `codex/analysis-export-*`、`codex/data-sources-*` 和 `codex/local-harness-*` 分支，并在各自配置中关闭 Vercel 自动部署。账户、数据库与环境配置见 [Vercel 部署指南](docs/VERCEL_TRIAL.md)。Vercel 仅托管网页/API，后台挖掘仍需独立常驻 Worker。
 
 1. 导入此仓库，Root Directory 使用仓库根目录；选择 FastAPI，移除原 v0 项目遗留的 Build Command、Output Directory 和 Install Command 覆盖项。
 2. Python 使用根目录 .python-version 中的 3.12；pyproject.toml 的 [tool.vercel] 明确指定 entrypoint = "app:app"。根 app.py 导出 ASGI app，不会启动桌面窗口。

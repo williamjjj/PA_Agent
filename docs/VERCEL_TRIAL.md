@@ -1,8 +1,10 @@
-# Vercel 网页试用：PA 分析与历史回测
+# Vercel 网页部署：PA 分析与历史回测
 
 本次选择 Vercel 托管网页/API，连接持久 PostgreSQL，使用各账户自己的模型
 和行情凭据。支持登录、PA 分析、量化因子与历史回测；不部署常驻挖掘 Worker。
-网页分支已成功部署 Preview，并已连接独立的试用数据库。
+`main` 用于 Production，`codex/web-multiuser-vercel` 用于 Preview。
+网页版已连接持久数据库；将现有站点迁到 Production 时复用原数据库与加密密钥，
+以保留账户和记录。需要独立测试数据时，再为 Preview 配置独立数据库与密钥。
 部署状态 Ready 只说明发布完成，注册可用性以 `/api/status` 的结果为准。
 
 ## 1. 确认身份、项目与分支
@@ -12,9 +14,9 @@
 - 将自己的 GitHub 账户 `williamjjj` 正确关联到该 Vercel 账户。确认提交使用的
   本人 Gmail 已在 GitHub 添加并验证，并在 Vercel 中核对项目成员/提交者关联。
   若仍出现提交者不属于团队的提示，先修正真实账户关联，不伪造提交作者。
-- 这次网页代码位于 **`codex/web-multiuser-vercel`**。`main` 仍是桌面版本；
-  选择该网页分支创建 Preview，不自动切换生产分支、合并到 `main` 或把私有
-  仓库改为公开。
+- 正式网页代码位于 **`main`**，Vercel Production 跟踪此分支。
+  `codex/web-multiuser-vercel` 保留 Preview。三个桌面功能分支在自己的
+  `vercel.json` 中关闭自动部署；不要把桌面版禁用配置合入网页分支。
 
 项目根目录使用仓库根目录，框架选择 FastAPI，Python 为 `.python-version`
 指定的 3.12。`pyproject.toml` 已指定 `app:app` 入口。移除旧 v0 项目遗留的
@@ -46,9 +48,10 @@ Build Command、Output Directory 和 Install Command 覆盖项，让 Vercel 使�
 `DATABASE_URL` 必须使用数据库供应商提供的真实连接串。脚本不会打印密钥或
 覆盖已有文件。不要为升级已有数据库重新生成加密密钥，并安全备份原密钥。
 
-这次分支试用需要配置 **Preview** 环境，并在修改变量后重新部署。
-Production 环境独立配置；除非有意共用正式账户数据，Preview 应使用独立的
-数据库与密钥。不要设置 SQLite 或依赖 `PA_WEB_DATA_DIR` 在 Vercel 保存账户。
+正式部署需要配置 **Production** 环境；网页版分支预览需要配置 **Preview**。
+修改变量后重新部署对应环境。沿用现有站点账户时，两者有意使用同一数据库和
+加密密钥；需要隔离试验数据时使用独立的数据库与密钥。不要设置 SQLite 或依赖
+`PA_WEB_DATA_DIR` 在 Vercel 保存账户。
 
 ### 注册选项不可点击
 
@@ -56,12 +59,12 @@ Production 环境独立配置；除非有意共用正式账户数据，Preview �
 
 | 返回状态 | 含义与下一步 |
 |---|---|
-| `configured: false` | 账户存储服务未就绪。检查 Preview 环境是否有正确的 `DATABASE_URL` 和有效的 `PA_WEB_ENCRYPTION_KEY`，以及数据库能否连接；单独开放注册不会修复存储配置 |
+| `configured: false` | 账户存储服务未就绪。检查当前部署对应的 Production 或 Preview 环境是否有正确的 `DATABASE_URL` 和有效的 `PA_WEB_ENCRYPTION_KEY`，以及数据库能否连接；单独开放注册不会修复存储配置 |
 | `configured: true, registration_open: false` | 存储配置检查已通过，但站点未开放注册。请用管理员账户登录，在「邀请码管理」启用注册；已有数据库不再读取环境变量来覆盖此策略 |
 | 两项均为 `true` | 注册已开放，可以选择注册并提交账户信息；如使用邀请码，需输入正确邀请码 |
 
 不确定是否连接数据库时，先在项目 **Settings → Environment Variables** 中
-筛选 **Preview**，查看变量名称及适用分支即可，不必展示值。如果只有
+筛选当前部署的 **Production** 或 **Preview**，查看变量名称及适用分支即可，不必展示值。如果只有
 `POSTGRES_URL` 等供应商变量名，需要把其适用的 PostgreSQL 连接串安全配置
 为本应用读取的 `DATABASE_URL`。若未创建数据库，再到项目 Storage 或
 Marketplace 连接 PostgreSQL 并选择当前提供的免费计划。
