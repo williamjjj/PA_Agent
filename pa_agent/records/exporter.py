@@ -430,10 +430,16 @@ def ohlcv_csv(bars):
     writer = csv.writer(output)
     writer.writerow(["time", "open", "high", "low", "close", "volume"])
     for bar in sorted(bars, key=lambda bar: float(bar.get("ts_open", 0))):
+        values = [
+            bar.get("ts_open", ""),
+            *[bar.get(key, "") for key in ("open", "high", "low", "close", "volume")],
+        ]
         writer.writerow(
             [
-                bar.get("ts_open", ""),
-                *[bar.get(key, "") for key in ("open", "high", "low", "close", "volume")],
+                "'" + value
+                if isinstance(value, str) and value.startswith(("=", "+", "-", "@"))
+                else value
+                for value in values
             ]
         )
     return output.getvalue().encode("utf-8-sig")

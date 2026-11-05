@@ -3943,7 +3943,7 @@ class MainWindow(QMainWindow):
             })
 
         # If the analysis failed due to truncation/context issues, prompt actionable help.
-        if exc_info:
+        if exc_info and exc_info.get("type") != "user_cancelled":
             self._maybe_show_truncation_help_dialog(exc_info)
 
             if exc_info:

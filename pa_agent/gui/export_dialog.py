@@ -219,10 +219,15 @@ class AnalysisExportDialog(QDialog):
             self._status.setText("请至少勾选一个环节。")
             return
         ext = self._format.currentData()
+        directory = DATA_ROOT / "exports"
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            directory = DATA_ROOT
         target, _ = QFileDialog.getSaveFileName(
             self,
             "导出分析",
-            str(DATA_ROOT / "exports" / (default_filename(self._record) + ext)),
+            str(directory / (default_filename(self._record) + ext)),
             f"导出文件 (*{ext})",
         )
         if not target:
