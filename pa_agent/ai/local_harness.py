@@ -169,12 +169,25 @@ class _WindowsJob:
 
     def close(self) -> None:
         if self.handle is not None:
+            import win32api
+            import win32event
             import win32job
+            handles = []
             try:
-                # Termination is asynchronous on Windows. Wait for descendants
-                # to release inherited stdin/files before deleting the spool.
+                # ActiveProcesses can reach zero before inherited files close.
+                # Wait on the actual process handles before removing the spool.
+                for pid in win32job.QueryInformationJobObject(
+                    self.handle, win32job.JobObjectBasicProcessIdList
+                ):
+                    try:
+                        handles.append(win32api.OpenProcess(0x00100000, False, pid))
+                    except win32api.error:
+                        pass  # The process already exited.
                 win32job.TerminateJobObject(self.handle, 1)
                 deadline = time.monotonic() + 5
+                for handle in handles:
+                    remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                    win32event.WaitForSingleObject(handle, remaining_ms)
                 while time.monotonic() < deadline:
                     info = win32job.QueryInformationJobObject(
                         self.handle, win32job.JobObjectBasicAccountingInformation)
@@ -182,6 +195,8 @@ class _WindowsJob:
                         break
                     time.sleep(.02)
             finally:
+                for handle in handles:
+                    handle.Close()
                 self.handle.Close()
                 self.handle = None
 
@@ -252,6 +267,7 @@ class LocalHarnessClient:
         self._settings = settings
         self._log = logger_ or logging.getLogger(__name__)
         self._lock = threading.Lock()
+        self.progress_text = ""
 
     def update_provider(self, settings: AIProviderSettings) -> None:
         if settings.backend == "api":
@@ -271,8 +287,10 @@ class LocalHarnessClient:
         if not self._lock.acquire(blocking=False):
             raise RuntimeError("本地 harness 正在分析，请等待完成或先取消。")
         try:
+            self.progress_text = "正在启动本地 agent"
             return self._run(messages, on_content_token, cancel_token, timeout_s)
         finally:
+            self.progress_text = ""
             self._lock.release()
 
     def _run(self, messages: list[dict], on_content: Callable | None,
@@ -323,12 +341,16 @@ class LocalHarnessClient:
                 job = None
                 try:
                     job = _WindowsJob(process)
+                    self.progress_text = "等待 agent 返回结果"
                     while process.poll() is None:
                         if cancel_token is not None and cancel_token.is_set():
                             raise CancelledError("本地分析已取消")
                         if time.monotonic() >= deadline:
                             raise TimeoutError(f"{BACKENDS[settings.backend]} 分析超时，进程已停止。")
-                        if output_path.stat().st_size + error_path.stat().st_size > MAX_OUTPUT_BYTES:
+                        output_size = output_path.stat().st_size
+                        if output_size:
+                            self.progress_text = "已收到 agent 输出，等待本阶段完成"
+                        if output_size + error_path.stat().st_size > MAX_OUTPUT_BYTES:
                             raise RuntimeError("harness 输出超过大小上限，已停止以保护内存。")
                         time.sleep(0.05)
                     if cancel_token is not None and cancel_token.is_set():

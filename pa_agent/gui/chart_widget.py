@@ -14,7 +14,7 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QEvent, Qt, QTimer
 
-from pa_agent.gui.widgets.candle_item import CandleItem
+from pa_agent.gui.widgets.candle_series_item import CandleSeriesItem
 from pa_agent.gui.widgets.overlay_lines import OverlayLines
 from pa_agent.gui.widgets.seq_label_item import SeqLabelItem
 from pa_agent.util.trade_metrics import is_long_direction
@@ -33,6 +33,7 @@ _Y_TOP_EXTRA_RATIO = 0.04
 _FIT_VISIBLE_BARS = 20
 _AXIS_RESIZE_MIN_WIDTH = 40
 _AXIS_RESIZE_EDGE_PX = 8
+_MAX_VISIBLE_LABELS = 150
 
 
 class ChartWidget(pg.PlotWidget):
@@ -55,8 +56,10 @@ class ChartWidget(pg.PlotWidget):
         # Internal state
         self._latest_frame: KlineFrame | None = None
         self._dirty: bool = False
-        self._candle_items: list[CandleItem] = []
+        self._candle_series = CandleSeriesItem()
+        self.addItem(self._candle_series)
         self._seq_labels: list[SeqLabelItem] = []
+        self._labels_by_x: dict[int, SeqLabelItem] = {}
         self._ema_line: pg.PlotDataItem | None = None
         self._overlay = OverlayLines()
         self._sr_items: list[pg.GraphicsItem] = []  # support/resistance level lines
@@ -73,6 +76,7 @@ class ChartWidget(pg.PlotWidget):
 
         vb = self.getViewBox()
         vb.enableAutoRange(x=False, y=False)
+        vb.sigXRangeChanged.connect(self._sync_visible_labels)
 
         # 30 Hz redraw timer (task 14.5)
         self._timer = QTimer(self)
@@ -88,6 +92,10 @@ class ChartWidget(pg.PlotWidget):
         if point_size == self._seq_label_font_pt:
             return
         self._seq_label_font_pt = point_size
+        for label in self._seq_labels:
+            self.removeItem(label)
+        self._seq_labels.clear()
+        self._labels_by_x.clear()
         if self._latest_frame is not None:
             self._dirty = True
 
@@ -121,7 +129,7 @@ class ChartWidget(pg.PlotWidget):
         from pa_agent.data.snapshot import frame_is_pure_closed, frames_equal_for_chart
 
         current = self._latest_frame
-        if current is None or not self._candle_items:
+        if current is None or not self._candle_series.bars:
             return False
         if not frame_is_pure_closed(current) or not frame_is_pure_closed(frame):
             return False
@@ -347,6 +355,7 @@ class ChartWidget(pg.PlotWidget):
 
     def reset(self) -> None:
         """Clear all chart items (candles, labels, EMA, overlay lines)."""
+        self._latest_frame = None
         self.clear_decision_overlay()
         self._clear_candles_and_labels()
         if self._ema_line is not None:
@@ -369,14 +378,14 @@ class ChartWidget(pg.PlotWidget):
     # ── Internal rendering ────────────────────────────────────────────────────
 
     def _render_frame(self, frame: "KlineFrame") -> None:
-        """Rebuild all candle items, EMA line, and sequence labels."""
-        self._clear_candles_and_labels()
-        if self._ema_line is not None:
-            self.removeItem(self._ema_line)
-            self._ema_line = None
+        """Update cached candle blocks, one EMA item, and visible labels."""
+        self._candle_series.set_bars(frame.bars)
         bars = frame.bars
         n = len(bars)
         if n == 0:
+            self._sync_visible_labels()
+            if self._ema_line is not None:
+                self._ema_line.setData([], [])
             return
 
         # bars[0] is newest (seq=1); we want x=0 for oldest, x=n-1 for newest
@@ -386,26 +395,6 @@ class ChartWidget(pg.PlotWidget):
 
         for i, bar in enumerate(bars):
             x_pos = n - 1 - i  # oldest bar at x=0, newest at x=n-1
-
-            forming = not bar.closed
-
-            # Candle (forming bar: semi-transparent dashed outline)
-            candle = CandleItem(bar, x_pos, forming=forming)
-            self.addItem(candle)
-            self._candle_items.append(candle)
-
-            # Sequence label — odd seq only; skip forming bar (seq=0)
-            if bar.seq > 0 and bar.seq % 2 == 1:
-                label_y = bar.high
-                seq_label = SeqLabelItem(
-                    bar.seq,
-                    x_pos,
-                    label_y,
-                    font_pt=self._seq_label_font_pt,
-                    forming=forming,
-                )
-                self.addItem(seq_label)
-                self._seq_labels.append(seq_label)
 
             # EMA20 point (skip NaN)
             ema_val = frame.indicators.ema20[i]
@@ -419,18 +408,48 @@ class ChartWidget(pg.PlotWidget):
             ema_color: tuple[int, ...] = _EMA_COLOR
             if newest_forming:
                 ema_color = (255, 200, 0, 140)
-            self._ema_line = pg.PlotDataItem(
-                x=np.array(ema_x),
-                y=np.array(ema_y),
-                pen=pg.mkPen(color=ema_color, width=1),
-            )
-            self.addItem(self._ema_line)
+            if self._ema_line is None:
+                self._ema_line = pg.PlotDataItem()
+                self.addItem(self._ema_line)
+            self._ema_line.setPen(pg.mkPen(color=ema_color, width=1))
+            self._ema_line.setData(x=np.array(ema_x), y=np.array(ema_y))
+        elif self._ema_line is not None:
+            self._ema_line.setData([], [])
+
+        self._sync_visible_labels()
 
         self._update_direction_marker()
 
         if self._fit_on_next_render:
             self._fit_on_next_render = False
             self.fit_view()
+
+    def _sync_visible_labels(self, *_args) -> None:
+        """Keep labels for the viewport; the underlying frame always stays complete."""
+        frame = self._latest_frame
+        bars = self._candle_series.bars if frame is not None else ()
+        n = len(bars)
+        left, right = self.getViewBox().viewRange()[0]
+        first = max(0, math.floor(left) - 1)
+        last = min(n - 1, math.ceil(right) + 1)
+        candidates = [(x, bars[n - 1 - x]) for x in range(first, last + 1)
+                      if bars[n - 1 - x].seq > 0 and bars[n - 1 - x].seq % 2 == 1]
+        stride = max(1, math.ceil(len(candidates) / _MAX_VISIBLE_LABELS))
+        desired = dict(candidates[::stride])
+        for x in list(self._labels_by_x):
+            if x not in desired:
+                self.removeItem(self._labels_by_x.pop(x))
+        for x, bar in desired.items():
+            label = self._labels_by_x.get(x)
+            if label is None:
+                label = SeqLabelItem(bar.seq, x, bar.high, font_pt=self._seq_label_font_pt,
+                                     forming=not bar.closed)
+                self.addItem(label)
+                self._labels_by_x[x] = label
+            else:
+                label.setText(f"#{bar.seq}")
+                label.setPos(float(x), bar.high)
+        self._seq_labels = list(self._labels_by_x.values())
 
     def _view_ranges_for_frame(
         self,
@@ -542,11 +561,10 @@ class ChartWidget(pg.PlotWidget):
         self._direction_items.append(marker)
 
     def _clear_candles_and_labels(self) -> None:
-        """Remove all candle and label items from the plot."""
-        for item in self._candle_items:
-            self.removeItem(item)
-        self._candle_items.clear()
+        """Clear drawing caches while retaining the reusable candle item."""
+        self._candle_series.set_bars(())
 
         for item in self._seq_labels:
             self.removeItem(item)
         self._seq_labels.clear()
+        self._labels_by_x.clear()

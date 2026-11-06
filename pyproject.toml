@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pa-agent"
-version = "1.68.3"
+version = "1.68.4"
 description = "Price Action AI assistant: MT5 kline data, two-stage LLM analysis (AGPL-3.0)"
 readme = "README.md"
 requires-python = ">=3.11"

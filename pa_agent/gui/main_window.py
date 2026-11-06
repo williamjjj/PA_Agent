@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from typing import Any
 
 from PyQt6.QtCore import QThread, QTimer, pyqtSignal, QObject
@@ -30,11 +31,9 @@ from PyQt6.QtCore import Qt
 from pa_agent.ai.response_extract import reasoning_from_response
 from pa_agent.app_context import AppContext
 from pa_agent.gui.validation_debug_dialog import show_validation_debug_dialog
+from pa_agent.gui.worker_lifetime import retire_worker
 
 logger = logging.getLogger(__name__)
-
-# Zombie timeout in milliseconds (5 seconds)
-_WORKER_JOIN_TIMEOUT_MS = 5000
 
 
 def _format_price(price: float) -> str:
@@ -267,6 +266,8 @@ class _AnalysisWorker(QThread):
 class MainWindow(QMainWindow):
     """Top-level workbench: chart + AI sidebar (analysis / raw / decision)."""
 
+    probe_status = pyqtSignal(str)
+
     def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(
@@ -281,6 +282,11 @@ class MainWindow(QMainWindow):
         self._cancel_token: Any = None
         self._window_closing = False
         self._analysis_in_progress = False
+        self._data_fetch_pending = False
+        self._data_fetch_started_at = 0.0
+        self._task_started_at = 0.0
+        self._task_stage = ""
+        self._awaiting_analysis_bars = None
         self._last_analysis_had_error = False
         self._switching = False
         self._chart_refresh_paused = False
@@ -686,6 +692,11 @@ class MainWindow(QMainWindow):
         self._submit_btn.clicked.connect(self._on_submit_analysis)
         ctrl_layout.addWidget(self._submit_btn)
 
+        self._cancel_task_btn = QPushButton("取消任务")
+        self._cancel_task_btn.setEnabled(False)
+        self._cancel_task_btn.clicked.connect(self._on_cancel_task)
+        ctrl_layout.addWidget(self._cancel_task_btn)
+
         # Incremental button is kept for programmatic use but hidden from the
         # toolbar — the submit button's label changes to "增量分析" automatically
         # when an eligible prior record is detected.
@@ -767,6 +778,9 @@ class MainWindow(QMainWindow):
         outer_layout.addWidget(self._disclaimer_label)
 
         status_row = QHBoxLayout()
+        self._task_progress_label = QLabel("")
+        self._task_progress_label.setObjectName("mutedLabel")
+        status_row.addWidget(self._task_progress_label)
         status_row.addStretch()
         self._last_refresh_ts: float = 0.0
         self._refresh_elapsed_label = QLabel("距上次刷新: —")
@@ -836,6 +850,7 @@ class MainWindow(QMainWindow):
 
     def _connect_event_bus(self) -> None:
         """Wire EventBus signals to status bar and tab slots (if bus is ready)."""
+        self.probe_status.connect(self._on_status_update)
         bus = self._ctx.event_bus
         if bus is None:
             return
@@ -878,76 +893,51 @@ class MainWindow(QMainWindow):
             cancel_token=self._refresh_cancel_token,
         )
 
-        # Wire RefreshLoop signals
-        self._refresh_loop.frame_ready.connect(self._on_refresh_frame_ready)
-        self._refresh_loop.status_changed.connect(self._on_status_update)
+        loop = self._refresh_loop
 
-        self._refresh_loop.start()
+        def on_frame(bars):
+            if self._ui_is_alive() and self._refresh_loop is loop:
+                self._on_refresh_frame_ready(bars)
+
+        def on_status(message):
+            if self._ui_is_alive() and self._refresh_loop is loop:
+                self._on_status_update(message)
+
+        loop.frame_ready.connect(on_frame)
+        loop.status_changed.connect(on_status)
+        self._data_fetch_pending = True
+        self._data_fetch_started_at = time.monotonic()
+        self._task_stage = "正在获取行情"
+        self._update_task_progress()
+        loop.start()
         logger.info("RefreshLoop started for %s %s",
                     getattr(data_source, "_symbol", "?"),
                     getattr(data_source, "_timeframe", "?"))
         self._update_symbol_data_alert()
 
     def _stop_refresh_loop(self) -> None:
-        """Stop the background RefreshLoop thread if running.
-
-        Disconnects signals before waiting so that a zombie loop's callbacks
-        cannot fire after the owning MainWindow has moved on (e.g. symbol/tf
-        switch, new worker started).
-
-        If the loop does not finish within ``_WORKER_JOIN_TIMEOUT_MS`` it is
-        tracked as a zombie.  Zombie loops are reaped later in
-        ``_reap_zombie_loops()`` so their QThread resources are eventually
-        freed.
-        """
+        """Cancel without waiting on the GUI thread; retire after run() exits."""
         loop = getattr(self, "_refresh_loop", None)
         token = getattr(self, "_refresh_cancel_token", None)
-        if loop is None:
-            return
-        # Disconnect signals first to prevent zombie callbacks
-        try:
-            loop.frame_ready.disconnect(self._on_refresh_frame_ready)
-        except (TypeError, RuntimeError):
-            pass
-        try:
-            loop.status_changed.disconnect(self._on_status_update)
-        except (TypeError, RuntimeError):
-            pass
-        if token is not None:
-            token.set()
-        # Actively close the live WebSocket so any blocked get_hist() recv()
-        # exits immediately instead of waiting out the full timeout.  This is
-        # the only reliable way to unblock the RefreshLoop thread before the
-        # join below.
-        data_source = getattr(self._ctx, "data_source", None)
-        if data_source is not None:
-            close_ws = getattr(data_source, "_close_tv_socket", None)
-            if callable(close_ws):
-                try:
-                    close_ws()
-                except Exception:  # noqa: BLE001
-                    pass
-        if loop.isRunning():
-            loop.wait(_WORKER_JOIN_TIMEOUT_MS)
-            if loop.isRunning():
-                # RefreshLoop is stuck in a blocking WebSocket call — it will
-                # eventually time out and check the cancel token, but until
-                # then we track it as a zombie so it can be reaped later.
-                logger.warning(
-                    "RefreshLoop did not finish within %d ms; tracking as zombie",
-                    _WORKER_JOIN_TIMEOUT_MS,
-                )
-                zombies = getattr(self, "_zombie_loops", None)
-                if zombies is None:
-                    zombies = []
-                    self._zombie_loops = zombies
-                zombies.append(loop)
-            else:
-                loop.deleteLater()
-        else:
-            loop.deleteLater()
         self._refresh_loop = None
         self._refresh_cancel_token = None
+        self._data_fetch_pending = False
+        if self._awaiting_analysis_bars is not None:
+            self._awaiting_analysis_bars = None
+            self._analysis_in_progress = False
+        if loop is not None:
+            for signal in (loop.frame_ready, loop.status_changed):
+                try:
+                    signal.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+            if token is not None:
+                token.set()
+            cancel = getattr(getattr(self._ctx, "data_source", None), "cancel_pending", None)
+            if callable(cancel):
+                cancel()
+            retire_worker(loop)
+        self._update_task_progress()
 
     def _ui_is_alive(self) -> bool:
         """True while MainWindow (and its widgets) can still be touched from slots."""
@@ -977,105 +967,60 @@ class MainWindow(QMainWindow):
                 pass
 
     def _reap_zombie_workers(self) -> None:
-        """Join zombie analysis workers that finished since last check."""
-        zombies = getattr(self, "_zombie_workers", None)
-        if not zombies:
-            return
-        still_alive: list[_AnalysisWorker] = []
-        for worker in zombies:
-            if worker.isRunning():
-                still_alive.append(worker)
-            else:
-                worker.deleteLater()
-        if still_alive:
-            self._zombie_workers = still_alive
-        else:
-            self._zombie_workers = []
+        """Keep only cancelling analyses whose background work is still running."""
+        self._zombie_workers = [
+            worker for worker in getattr(self, "_zombie_workers", [])
+            if _qobject_alive(worker) and worker.isRunning()
+        ]
 
     def _cancel_analysis_prep_worker(self) -> None:
-        """Drop any in-flight analysis prep worker (does not block the UI thread)."""
+        """Invalidate prep callbacks and retain the worker until it has stopped."""
         self._prep_worker_id = None
         worker = getattr(self, "_prep_worker", None)
         self._prep_worker = None
-        if worker is None:
+        if not _qobject_alive(worker):
             return
-        try:
-            worker.ready.disconnect()
-            worker.failed.disconnect()
-        except (TypeError, RuntimeError):
-            pass
-        if worker.isRunning():
-            worker.wait(0)
-        worker.deleteLater()
+        for signal in (worker.ready, worker.failed):
+            try:
+                signal.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+        worker.requestInterruption()
+        retire_worker(worker)
 
-    def _cancel_analysis_worker(self, *, join_ms: int = 0) -> None:
-        """Cancel the AI worker and invalidate any pending finished callbacks."""
+    def _cancel_analysis_worker(self) -> None:
+        """Request cancellation; never join a model process from the GUI thread."""
         self._cancel_analysis_prep_worker()
         self._analysis_worker_id = None
         if self._cancel_token is not None:
             self._cancel_token.set()
         worker = self._worker
         self._worker = None
-        if worker is None:
+        if not _qobject_alive(worker):
             return
-        # Disconnect before join so stale slots cannot touch the UI mid-switch.
         self._disconnect_analysis_worker(worker)
         if worker.isRunning():
-            worker.wait(join_ms)
-        if worker.isRunning():
-            logger.info(
-                "Analysis worker still running after %d ms cancel wait; "
-                "tracking as zombie",
-                _WORKER_JOIN_TIMEOUT_MS,
-            )
-            zombies = getattr(self, "_zombie_workers", None)
-            if zombies is None:
-                zombies = []
-                self._zombie_workers = zombies
-            zombies.append(worker)
-        else:
-            worker.deleteLater()
+            self._zombie_workers = [*getattr(self, "_zombie_workers", []), worker]
+        retire_worker(worker)
 
     def _cancel_snapshot_fetch_worker(self) -> None:
-        """Cancel any running SnapshotFetchWorker and nullify its reference.
-
-        Uses a generation-based invalidation: the callback closures check
-        ``_snapshot_fetch_id`` before acting, so stale workers that finish
-        after cancellation are silently ignored.
-        """
-        sfw = getattr(self, "_snapshot_fetch_worker", None)
-        if sfw is not None:
-            # Invalidate the fetch generation so stale callbacks are no-ops
-            self._snapshot_fetch_id = None
-            self._snapshot_fetch_worker = None
-            if sfw.isRunning():
-                sfw.wait(_WORKER_JOIN_TIMEOUT_MS)
-                if sfw.isRunning():
-                    logger.warning(
-                        "SnapshotFetchWorker did not finish within %d ms; "
-                        "it will eventually finish but results will be ignored",
-                        _WORKER_JOIN_TIMEOUT_MS,
-                    )
+        """Cancel a snapshot immediately and ignore its queued callbacks."""
+        worker = getattr(self, "_snapshot_fetch_worker", None)
+        self._snapshot_fetch_id = None
+        self._snapshot_fetch_worker = None
+        if not _qobject_alive(worker):
+            return
+        worker.cancel()
+        for signal in (worker.bars_ready, worker.failed):
+            try:
+                signal.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+        retire_worker(worker)
 
     def _reap_zombie_loops(self) -> None:
-        """Join any zombie RefreshLoops that have finished since last check.
-
-        Called periodically (e.g. from ``_on_worker_done``) to free QThread
-        resources that were stranded when ``_stop_refresh_loop`` timed out.
-        """
-        zombies = getattr(self, "_zombie_loops", None)
-        if not zombies:
-            return
-        still_alive: list = []
-        for loop in zombies:
-            if loop.isRunning():
-                still_alive.append(loop)
-            else:
-                loop.deleteLater()
-        if still_alive:
-            self._zombie_loops = still_alive
-        else:
-            self._zombie_loops = []
+        # Retired refresh workers release themselves on QThread.finished.
+        pass
 
     def _disconnect_data_source(self, data_source: Any) -> None:
         if data_source is None:
@@ -1168,20 +1113,8 @@ class MainWindow(QMainWindow):
             data_source.set_exchange(self._tv_exchange_text())
 
     def _on_tv_probe_status(self, symbol: str, exchange: str, label: str) -> None:
-        """Callback from TradingViewSource auto-probe: show current exchange being tried.
-        
-        Called from worker thread; use invokeMethod to update GUI on main thread.
-        """
-        from PyQt6.QtCore import Qt, QMetaObject, Q_ARG
-        timeframe = self._tf_combo.currentText() if hasattr(self, "_tf_combo") else ""
-        msg = f"TV 自动探测 {label} {timeframe}…"
-        # Update status bar on main thread to avoid race with other updates
-        QMetaObject.invokeMethod(
-            self._status_bar,
-            "showMessage",
-            Qt.ConnectionType.QueuedConnection,
-            Q_ARG(str, msg)
-        )
+        """Worker callback: relay text without reading any GUI controls."""
+        self.probe_status.emit(f"TV 自动探测 {label}…")
 
     def _persist_tradingview_exchange(self) -> None:
         settings = getattr(self._ctx, "settings", None)
@@ -1676,6 +1609,8 @@ class MainWindow(QMainWindow):
                 self._status_bar.clearMessage()
             return
         self._status_bar.showMessage(text)
+        if self._analysis_in_progress:
+            self._task_stage = text
         if text == "数据延迟":
             self._update_symbol_data_alert()
         if self._analysis_in_progress:
@@ -1736,6 +1671,9 @@ class MainWindow(QMainWindow):
 
     def _on_fetch_data_clicked(self) -> None:
         """Start (or restart) continuous data refresh for the current symbol/timeframe."""
+        if self._data_fetch_pending:
+            self._status_bar.showMessage("行情正在获取，可点击“取消任务”停止")
+            return
         data_source = getattr(self._ctx, "data_source", None)
         if data_source is None or not getattr(data_source, "_connected", False):
             self._status_bar.showMessage("数据源未连接，请先切换数据来源")
@@ -1753,22 +1691,6 @@ class MainWindow(QMainWindow):
             self._on_symbol_or_tf_changed(new_symbol, new_tf)
             return
 
-        # For TradingView, probe connectivity on-demand (not at startup)
-        if self._current_data_source_kind() == "tradingview":
-            from pa_agent.data.tradingview_connectivity import check_tradingview_connectivity
-            ok, detail = check_tradingview_connectivity()
-            if not ok:
-                if detail:
-                    logger.info("TradingView unreachable: %s", detail)
-                from pa_agent.gui.tv_connectivity_dialog import show_tv_connectivity_blocked_dialog
-                choice = show_tv_connectivity_blocked_dialog(self)
-                if choice == "mt5":
-                    self._select_data_source_kind("mt5", switch=True)
-                return
-            # Brief pause to let the probe's WebSocket fully disconnect before
-            # the refresh loop opens its own connection (avoids TV rate-limiting)
-            import time as _time
-            _time.sleep(1.5)
         # Stop any existing loop first so we can start fresh.
         # Reset the keep-analysis sentinel so a stale closed-bar ts from a
         # previous session / interrupted fetch does not immediately fire a
@@ -1961,6 +1883,7 @@ class MainWindow(QMainWindow):
         import time as _time
 
         self._update_wait_close_countdown_display()
+        self._update_task_progress()
 
         label = getattr(self, "_refresh_elapsed_label", None)
         if label is None:
@@ -1988,6 +1911,51 @@ class MainWindow(QMainWindow):
     def _on_data_frame(self, frame: Any) -> None:
         """Forward a new KlineFrame to the chart widget (throttled by 30 Hz timer)."""
         self._chart_widget.set_frame(frame)
+
+    def _update_task_progress(self) -> None:
+        """Display elapsed time without polling the network or blocking Qt."""
+        if not hasattr(self, "_task_progress_label"):
+            return
+        had_cancelling = bool(getattr(self, "_zombie_workers", []))
+        self._reap_zombie_workers()
+        if had_cancelling and not self._zombie_workers:
+            self._sync_submit_button_state()
+        now = time.monotonic()
+        fetching = self._data_fetch_pending or getattr(self, "_snapshot_fetch_worker", None) is not None
+        started = self._data_fetch_started_at if fetching else self._task_started_at
+        if fetching and started and now - started >= 35:
+            self._on_cancel_task()
+            self._status_bar.showMessage("获取行情超过 35 秒，已取消。请检查数据源后重试。")
+            return
+        busy = fetching or self._analysis_in_progress or self._pending_submit_after_close
+        self._cancel_task_btn.setEnabled(busy)
+        self._fetch_data_btn.setEnabled(not fetching)
+        self._fetch_data_btn.setText("获取中…" if fetching else "获取数据")
+        if busy:
+            stage = "正在获取行情" if fetching else self._task_stage
+            progress = getattr(getattr(self._ctx, "client", None), "progress_text", "")
+            if not fetching and self._worker is not None and isinstance(progress, str) and progress:
+                stage = f"{stage} · {progress}"
+            elapsed = int(now - started) if started else 0
+            self._task_progress_label.setText(f"{stage or '等待 K 线收盘'} · 已等待 {elapsed} 秒")
+        elif self._zombie_workers:
+            self._task_progress_label.setText("正在结束上一任务…")
+        else:
+            self._task_progress_label.clear()
+
+    def _on_cancel_task(self) -> None:
+        self._keep_analysis_checkbox.setChecked(False)
+        self._clear_pending_bar_close_wait()
+        self._awaiting_analysis_bars = None
+        self._cancel_snapshot_fetch_worker()
+        self._cancel_analysis_worker()
+        self._stop_refresh_loop()
+        self._analysis_in_progress = False
+        self._auto_incremental_pending = False
+        self._decision_badge.setText("")
+        self._update_submit_button_state()
+        self._update_task_progress()
+        self._status_bar.showMessage("已取消任务，可重新获取数据或提交分析")
 
     def _update_live_price_label(self, bars: Any) -> None:
         """更新控制栏实时价格标签：仅显示最新价（颜色暗示涨跌）。"""
@@ -2024,6 +1992,7 @@ class MainWindow(QMainWindow):
         Chart updates on the UI thread only render; network I/O stays on RefreshLoop.
         """
         if bars:
+            self._data_fetch_pending = False
             self._last_frame_ready_bars = list(bars)
             self._update_live_price_label(bars)
             from pa_agent.data.bar_close_wait import current_forming_ts
@@ -2042,6 +2011,20 @@ class MainWindow(QMainWindow):
             if flow is not None and not self._analysis_in_progress:
                 flow.set_step_status(0, "done")
                 flow.set_step_caption(0, "已就绪")
+
+            pending = self._awaiting_analysis_bars
+            if pending is not None:
+                self._awaiting_analysis_bars = None
+                symbol, timeframe, count, incremental = pending
+                if self._bars_sufficient_for_analysis(bars, count):
+                    self._start_analysis_with_bars(
+                        symbol, timeframe, count, bars, force_incremental=incremental
+                    )
+                else:
+                    self._analysis_in_progress = False
+                    self._update_submit_button_state()
+                    self._status_bar.showMessage(f"数据源返回的 K 线不足 {count} 根，请检查品种、周期或数据源")
+            self._update_task_progress()
 
         if self._pending_submit_after_close:
             # bars 可能为空 (数据拉取失败), forming_bar_has_closed 会用时间判断是否收盘
@@ -2167,7 +2150,7 @@ class MainWindow(QMainWindow):
         try:
             # ── Step 1: Cancel current AI worker ─────────────────────────────
             had_analysis = self._analysis_in_progress
-            self._cancel_analysis_worker(join_ms=_WORKER_JOIN_TIMEOUT_MS)
+            self._cancel_analysis_worker()
 
             # ── Step 2: Save partial record if analysis was in progress ───────
             if had_analysis:
@@ -2846,10 +2829,7 @@ class MainWindow(QMainWindow):
         from pa_agent.demo.replayer import DemoReplayer
 
         if self._worker is not None and self._worker.isRunning():
-            if self._cancel_token is not None:
-                self._cancel_token.set()
-            self._worker.wait(_WORKER_JOIN_TIMEOUT_MS)
-            self._worker = None
+            self._cancel_analysis_worker()
 
         # When auto-chaining records, we reuse the same demo "kind".
         prev_kind = self._demo_mode_kind
@@ -2905,7 +2885,7 @@ class MainWindow(QMainWindow):
 
         # New record may use a different symbol/TF; drop previous trade overlays first.
         self._chart_widget.reset()
-        self._chart_widget.set_frame_now(frame, fit_view=True)
+        self._chart_widget.set_frame(frame, fit_view=True)
         self._set_chart_refresh_paused(True)
         self._analysis_in_progress = True
         self._update_submit_button_state()
@@ -3147,6 +3127,17 @@ class MainWindow(QMainWindow):
 
         from pa_agent.gui.snapshot_worker import SnapshotFetchWorker
 
+        self._analysis_in_progress = True
+        self._task_started_at = time.monotonic()
+        self._data_fetch_started_at = self._task_started_at
+        self._task_stage = "正在获取行情"
+        self._update_submit_button_state()
+        loop = getattr(self, "_refresh_loop", None)
+        if loop is not None and loop.isRunning():
+            self._awaiting_analysis_bars = (symbol, timeframe, bar_count, force_incremental)
+            self._data_fetch_pending = True
+            self._update_task_progress()
+            return
         self._status_bar.showMessage("正在后台获取K线…")
         from pa_agent.data.snapshot import INDICATOR_WARMUP_BARS
 
@@ -3166,6 +3157,8 @@ class MainWindow(QMainWindow):
                 return
             self._snapshot_fetch_worker = None
             if not self._bars_sufficient_for_analysis(bars, bar_count):
+                self._analysis_in_progress = False
+                self._update_submit_button_state()
                 self._status_bar.showMessage("数据不足，请等待图表刷新后再提交")
                 return
             self._last_frame_ready_bars = list(bars)
@@ -3183,11 +3176,15 @@ class MainWindow(QMainWindow):
             if not _qobject_alive(self):
                 return
             self._snapshot_fetch_worker = None
+            self._analysis_in_progress = False
+            self._update_submit_button_state()
             self._status_bar.showMessage(msg or "获取K线失败")
 
         worker.bars_ready.connect(_on_bars)
         worker.failed.connect(_on_fail)
         worker.start()
+        retire_worker(worker)
+        self._update_task_progress()
 
     def _start_analysis_with_bars(
         self,
@@ -3214,6 +3211,8 @@ class MainWindow(QMainWindow):
 
         from pa_agent.gui.analysis_prep_worker import AnalysisPrepWorker
 
+        self._task_started_at = time.monotonic()
+        self._task_stage = "准备分析快照"
         self._cancel_analysis_prep_worker()
         prep_id = object()
         self._prep_worker_id = prep_id
@@ -3258,6 +3257,8 @@ class MainWindow(QMainWindow):
         prep.ready.connect(_on_ready)
         prep.failed.connect(_on_failed)
         prep.start()
+        retire_worker(prep)
+        self._update_task_progress()
 
     def _launch_analysis_worker(
         self,
@@ -3376,7 +3377,7 @@ class MainWindow(QMainWindow):
         # Start AI worker before heavy chart/UI work so the UI stays responsive.
         self._worker.start()
 
-        self._chart_widget.set_frame_now(frame, fit_view=True)
+        self._chart_widget.set_frame(frame, fit_view=True)
         self._set_chart_refresh_paused(True)
         self._update_submit_button_state()
 
@@ -4391,6 +4392,13 @@ class MainWindow(QMainWindow):
             self._stop_refresh_loop()
         except RuntimeError as exc:
             logger.debug("Shutdown cleanup skipped: %s", exc)
+        from pa_agent.gui.worker_lifetime import has_running_workers
+
+        if event is not None and has_running_workers():
+            event.ignore()
+            self._status_bar.showMessage("正在结束后台任务并关闭…")
+            QTimer.singleShot(50, self.close)
+            return
         super().closeEvent(event)
 
     def showEvent(self, event: QShowEvent | None) -> None:
@@ -4569,6 +4577,8 @@ class MainWindow(QMainWindow):
             return "演示模式中，请退出演示后再提交真实分析"
         if self._analysis_in_progress:
             return "分析进行中"
+        if any(_qobject_alive(w) and w.isRunning() for w in getattr(self, "_zombie_workers", [])):
+            return "上一任务正在结束，请稍候"
         if self._pending_submit_after_close:
             return "等待最新K线收盘"
         if self._switching:
@@ -4605,6 +4615,7 @@ class MainWindow(QMainWindow):
 
         # Update submit button label to reflect incremental availability.
         self._refresh_incremental_label()
+        self._update_task_progress()
 
     def _refresh_incremental_label(self) -> None:
         """Check whether an incremental base record is available and update the

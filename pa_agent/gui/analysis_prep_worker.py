@@ -47,6 +47,13 @@ class AnalysisPrepWorker(QThread):
 
     def run(self) -> None:
         try:
+            if self.isInterruptionRequested():
+                return
+            # First import loads the model SDK and orchestration dependencies.
+            # Keep that cold-start work off the GUI thread as part of preparation.
+            from importlib import import_module
+
+            import_module("pa_agent.orchestrator.two_stage")
             from pa_agent.data.snapshot import build_display_frame
             from pa_agent.records.analysis_history import (
                 compute_incremental_bar_delta,
@@ -100,6 +107,8 @@ class AnalysisPrepWorker(QThread):
                         elif not self._force_incremental:
                             previous = None
 
+            if self.isInterruptionRequested():
+                return
             self.ready.emit(
                 AnalysisPrepResult(
                     frame=frame,

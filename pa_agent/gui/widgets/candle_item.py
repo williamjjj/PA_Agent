@@ -81,17 +81,19 @@ class CandleItem(pg.GraphicsObject):
 
         p.end()
 
-    def _paint_closed(self, p: QPainter, bar: "KlineBar", x: float) -> None:
+    @staticmethod
+    def _paint_closed(p: QPainter, bar: "KlineBar", x: float) -> None:
         color = _COLOR_UP if bar.close >= bar.open else _COLOR_DOWN
         p.setPen(QPen(color, 0))
         p.setBrush(color)
         half = _BODY_WIDTH / 2.0
-        body_top, body_bottom = self._body_bounds(bar)
+        body_top, body_bottom = CandleItem._body_bounds(bar)
         body_rect = QRectF(x - half, body_bottom, _BODY_WIDTH, body_top - body_bottom)
         p.drawRect(body_rect)
-        self._paint_wicks(p, bar, x, body_top, body_bottom, QPen(color, 0))
+        CandleItem._paint_wicks(p, bar, x, body_top, body_bottom, QPen(color, 0))
 
-    def _paint_forming(self, p: QPainter, bar: "KlineBar", x: float) -> None:
+    @staticmethod
+    def _paint_forming(p: QPainter, bar: "KlineBar", x: float) -> None:
         base = _COLOR_UP if bar.close >= bar.open else _COLOR_DOWN
         outline = QColor(base.red(), base.green(), base.blue(), 255)
         fill = QColor(base.red(), base.green(), base.blue(), 70)
@@ -103,7 +105,7 @@ class CandleItem(pg.GraphicsObject):
         border_pen.setStyle(Qt.PenStyle.DashLine)
 
         half = _FORMING_BODY_WIDTH / 2.0
-        body_top, body_bottom = self._body_bounds(bar)
+        body_top, body_bottom = CandleItem._body_bounds(bar)
         span = bar.high - bar.low
         min_body = max(span * 0.06, 1e-6) if span > 0 else 1e-6
         if body_top - body_bottom < min_body:
@@ -112,7 +114,7 @@ class CandleItem(pg.GraphicsObject):
             body_bottom = mid - min_body / 2.0
         body_rect = QRectF(x - half, body_bottom, _FORMING_BODY_WIDTH, body_top - body_bottom)
 
-        self._paint_wicks(p, bar, x, body_top, body_bottom, wick_pen)
+        CandleItem._paint_wicks(p, bar, x, body_top, body_bottom, wick_pen)
 
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(fill)

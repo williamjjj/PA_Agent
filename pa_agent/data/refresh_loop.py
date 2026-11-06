@@ -77,15 +77,16 @@ class RefreshLoop(QThread):
             self._in_flight = True
             try:
                 try:
-                    bars = self._source.latest_snapshot(
-                        self._n_bars + INDICATOR_WARMUP_BARS + 5
-                    )
+                    count = self._n_bars + INDICATOR_WARMUP_BARS + 5
+                    fetch = getattr(self._source, "latest_snapshot_cancellable", None)
+                    bars = (fetch(count, self._cancel_token) if callable(fetch)
+                            else self._source.latest_snapshot(count))
                     if self._consecutive_failures > 0:
                         # Clear any previous error message from the status bar.
                         self.status_changed.emit("")
                     self._consecutive_failures = 0
                     failure_start = None
-                    if bars:
+                    if bars and not (self._cancel_token is not None and self._cancel_token.is_set()):
                         self.frame_ready.emit(bars)
 
                 except DataSourceTransientError as exc:

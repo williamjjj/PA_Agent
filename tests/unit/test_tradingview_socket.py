@@ -17,7 +17,7 @@ from pa_agent.data.tradingview import TradingViewSource
 def _make_source_with_mock_tv() -> tuple[TradingViewSource, MagicMock]:
     src = TradingViewSource()
     tv = MagicMock()
-    tv.ws = MagicMock()
+    tv.ws = MagicMock(spec=["close"])
     src._tv = tv
     src._connected = True
     return src, tv
@@ -38,6 +38,18 @@ def test_close_tv_socket_noop_when_no_socket() -> None:
     tv.ws = None
     # Should not raise even though there is no live socket.
     src._close_tv_socket()
+
+
+def test_cancel_aborts_receive_without_close_handshake() -> None:
+    src, tv = _make_source_with_mock_tv()
+    ws = MagicMock(spec=["abort", "shutdown", "close"])
+    tv.ws = ws
+    src.cancel_pending()
+    ws.abort.assert_called_once()
+    ws.shutdown.assert_called_once()
+    ws.close.assert_not_called()
+    assert src._request_cancelled.is_set()
+    assert tv.ws is None
 
 
 def test_close_tv_socket_swallows_close_error() -> None:

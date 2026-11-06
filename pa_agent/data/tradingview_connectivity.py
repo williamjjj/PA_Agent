@@ -4,6 +4,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import time
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -14,26 +15,53 @@ _DEFAULT_RETRY_DELAY_S = 3.0
 
 def _probe_once(*, timeout_s: float) -> tuple[bool, str | None, bool]:
     """Single probe. Returns (ok, failure_detail, retryable)."""
+    cancelled = threading.Event()
+    holder = []
+
+    def close_socket():
+        if not holder:
+            return
+        ws = getattr(holder[0], "ws", None)
+        if ws is not None:
+            try:
+                abort = getattr(ws, "abort", None)
+                shutdown = getattr(ws, "shutdown", None)
+                if callable(abort) and callable(shutdown):
+                    abort()
+                    shutdown()
+                else:
+                    ws.close()
+            except Exception:
+                pass
 
     def _probe() -> None:
         from tvDatafeed import Interval, TvDatafeed  # type: ignore[import]
 
         tv = TvDatafeed()
-        df = tv.get_hist(
-            symbol="XAUUSD",
-            exchange="OANDA",
-            interval=Interval.in_1_minute,
-            n_bars=2,
-        )
-        if df is None or getattr(df, "empty", True):
-            raise RuntimeError("TradingView 返回空数据")
+        holder.append(tv)
+        setattr(tv, "_TvDatafeed__ws_timeout", timeout_s)
+        if cancelled.is_set():
+            return
+        try:
+            df = tv.get_hist(
+                symbol="XAUUSD",
+                exchange="OANDA",
+                interval=Interval.in_1_minute,
+                n_bars=2,
+            )
+            if df is None or getattr(df, "empty", True):
+                raise RuntimeError("TradingView 返回空数据")
+        finally:
+            close_socket()
 
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(_probe)
-            fut.result(timeout=timeout_s)
+        fut = pool.submit(_probe)
+        fut.result(timeout=timeout_s)
         return True, None, False
     except concurrent.futures.TimeoutError:
+        cancelled.set()
+        close_socket()
         logger.warning(
             "TradingView connectivity probe timed out after %.0fs", timeout_s
         )
@@ -46,6 +74,9 @@ def _probe_once(*, timeout_s: float) -> tuple[bool, str | None, bool]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("TradingView connectivity probe failed: %s", exc)
         return False, str(exc), True
+    finally:
+        # A with-statement would wait for the timed-out network call on exit.
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def check_tradingview_connectivity(

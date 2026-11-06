@@ -1,8 +1,6 @@
 """Chart skip-redraw when frozen closed frame matches snapshot."""
 from __future__ import annotations
 
-import math
-
 from pa_agent.data.base import IndicatorBundle, KlineBar, KlineFrame
 from pa_agent.data.snapshot import frame_is_pure_closed, frames_equal_for_chart
 from pa_agent.gui.chart_widget import ChartWidget
@@ -61,8 +59,8 @@ def test_set_frame_now_skips_identical_closed_frame(qtbot) -> None:
     qtbot.addWidget(widget)
     f1 = _frame()
     widget.set_frame_now(f1)
-    assert len(widget._candle_items) == 2
-    count_after_first = len(widget._candle_items)
+    assert widget._candle_series.bars == f1.bars
+    picture = widget._candle_series._blocks[0][1]
     f2 = KlineFrame(
         symbol=f1.symbol,
         timeframe=f1.timeframe,
@@ -71,13 +69,14 @@ def test_set_frame_now_skips_identical_closed_frame(qtbot) -> None:
         snapshot_ts_local_ms=2,
     )
     widget.set_frame_now(f2)
-    assert len(widget._candle_items) == count_after_first
+    assert widget._candle_series._blocks[0][1] is picture
 
 
 def test_set_frame_now_redraws_when_forming_removed(qtbot) -> None:
     widget = ChartWidget()
     qtbot.addWidget(widget)
     widget.set_frame_now(_frame(forming=True))
-    n_forming = len(widget._candle_items)
+    picture = widget._candle_series._blocks[0][1]
     widget.set_frame_now(_frame())
-    assert len(widget._candle_items) == n_forming
+    assert widget._candle_series.bars == _frame().bars
+    assert widget._candle_series._blocks[0][1] is not picture

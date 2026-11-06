@@ -90,6 +90,7 @@ class TradingViewSource(DataSource):
         # WebSocket and stores it on self.ws; concurrent calls clobber the
         # same socket and cause C++ segfaults.
         self._snapshot_lock = threading.Lock()
+        self._request_cancelled = threading.Event()
         # Callback for status updates during auto-probe: fn(symbol, exchange, label)
         self.on_probe_status = None
 
@@ -152,14 +153,28 @@ class TradingViewSource(DataSource):
         if ws is None:
             return
         try:
-            ws.close()
+            # A WebSocket close handshake can wait for the remote server.
+            # Abort recv first, then close the transport without a handshake.
+            abort = getattr(ws, "abort", None)
+            shutdown = getattr(ws, "shutdown", None)
+            if callable(abort) and callable(shutdown):
+                abort()
+                shutdown()
+            else:
+                ws.close()
         except Exception:  # noqa: BLE001
             logger.debug("tvDatafeed socket close failed", exc_info=True)
         finally:
             try:
-                tv.ws = None
+                if getattr(tv, "ws", None) is ws:
+                    tv.ws = None
             except Exception:  # noqa: BLE001
                 pass
+
+    def cancel_pending(self) -> None:
+        """Interrupt the active request without waiting on the GUI thread."""
+        self._request_cancelled.set()
+        self._close_tv_socket()
 
     # ── Discovery ─────────────────────────────────────────────────────────────
 
@@ -221,6 +236,8 @@ class TradingViewSource(DataSource):
         )
         last_exc: BaseException | None = None
         for attempt in range(1, _TV_FETCH_RETRIES + 1):
+            if self._request_cancelled.is_set():
+                raise DataSourceTransientError("行情获取已取消或超时")
             try:
                 df = self._tv.get_hist(
                     symbol=symbol,
@@ -249,7 +266,7 @@ class TradingViewSource(DataSource):
                 # trip TradingView rate limiting; the next call reconnects.
                 self._close_tv_socket()
             if attempt < _TV_FETCH_RETRIES:
-                time.sleep(_TV_FETCH_RETRY_SLEEP_S)
+                self._request_cancelled.wait(_TV_FETCH_RETRY_SLEEP_S)
         if last_exc is not None:
             raise last_exc
         return None
@@ -273,6 +290,8 @@ class TradingViewSource(DataSource):
         last_exc: BaseException | None = None
         tried: list[str] = []
         for exchange, code in plan:
+            if self._request_cancelled.is_set():
+                raise DataSourceTransientError("行情获取已取消")
             label = f"{exchange}:{code}"
             tried.append(label)
             # Notify GUI about current probe attempt
@@ -313,8 +332,34 @@ class TradingViewSource(DataSource):
         ``self.ws`` on each call, and concurrent access clobbers the
         WebSocket, causing C++ segfaults.
         """
-        with self._snapshot_lock:
-            return self._latest_snapshot_inner(n)
+        return self.latest_snapshot_cancellable(n)
+
+    def latest_snapshot_cancellable(self, n: int, cancel_token=None) -> list[KlineBar]:
+        """Allow a superseded fetch to leave the queue before touching the socket."""
+        expires = time.monotonic() + 30.0
+        def cancelled():
+            return cancel_token is not None and cancel_token.is_set()
+        while not self._snapshot_lock.acquire(timeout=.05):
+            if cancelled() or time.monotonic() >= expires:
+                raise DataSourceTransientError("行情获取已取消或等待超时")
+        try:
+            if cancelled():
+                raise DataSourceTransientError("行情获取已取消")
+            self._request_cancelled.clear()
+            # get_hist may receive heartbeats indefinitely even with a socket
+            # read timeout. Bound the whole snapshot, including exchange probes.
+            deadline = threading.Timer(max(.01, expires - time.monotonic()), self.cancel_pending)
+            deadline.daemon = True
+            deadline.start()
+            try:
+                result = self._latest_snapshot_inner(n)
+                if self._request_cancelled.is_set() or cancelled():
+                    raise DataSourceTransientError("行情获取已取消或超过 30 秒，请重试")
+                return result
+            finally:
+                deadline.cancel()
+        finally:
+            self._snapshot_lock.release()
 
     def _latest_snapshot_inner(self, n: int) -> list[KlineBar]:
         """Actual snapshot logic — caller holds ``_snapshot_lock``."""
