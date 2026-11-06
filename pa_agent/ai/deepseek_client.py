@@ -43,6 +43,9 @@ class AIUsage:
     cached_prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    # None keeps compatibility with API clients and historical records.
+    # Local harnesses distinguish an explicit zero from an absent field.
+    cache_usage_reported: bool | None = None
 
     @property
     def cache_hit_rate(self) -> float:

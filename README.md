@@ -29,7 +29,7 @@
 
 新增 **管理数据源** 与 **资讯与 MCP**：启用股票/期货行情，添加币安、OKX、CSV、自定义 API，以及金十/东方财富妙想 MCP；资讯可选择附加到 Codex 分析，并保留来源记录。使用说明见 [数据源与资讯接入](docs/DATA_SOURCES.md)。
 
-[下载安装包与绿色版](https://github.com/williamjjj/PA_Agent/releases/tag/desktop-1.68.5-20261107) · [数据源验收记录](docs/DATA_SOURCES_VALIDATION_20261105.md) · [数据源功能说明](docs/DATA_SOURCES.md)
+[下载安装包与绿色版](https://github.com/williamjjj/PA_Agent/releases/tag/desktop-1.68.6-20261107) · [数据源验收记录](docs/DATA_SOURCES_VALIDATION_20261105.md) · [数据源功能说明](docs/DATA_SOURCES.md)
 
 此分支以 `williamjjj/PA_Agent` 的 `222badb`（1.68）为基础，并移植
 `codex/web-multiuser-vercel` 的 AlphaGPT 因果因子、历史回测和 CPU 公式搜索。
@@ -37,6 +37,9 @@
 桌面版 **1.68.5** 新增实际 Codex 模型显示、速度选择、同品种同周期连续 10 次增量复盘，
 以及直接使用 PA 行情的股票、期货、外汇多周期研究。安装与绿色包、实测性能、研究口径和使用方法见
 [桌面版 1.68.5 说明](docs/DESKTOP_1_68_5.md)。
+
+**1.68.6** 修复缓存缺失值显示，保存 Codex 原始用量，稳定调用目录并修复显式模型参数重复问题。
+参见 [Fast 缓存核验](docs/CACHE_AUDIT_20261107.md)。
 
 - **免填 API 的分析方式**：在「AI 模型设置」选择 Codex、WorkBuddy/CodeBuddy CLI 或 Hermes。
   使用该 harness 自己的登录和模型设置；不等于离线推理或无限额度。可指定实际 CLI 入口，模型留空沿用默认。
@@ -46,8 +49,8 @@
   沿用网页分支的因果计算与样本外口径；不包含旧 Transformer/GPU 训练、实盘下单或旧权重转换。
 - **在 harness 内调用**：`pa-agent-cli.exe integrate --target all` 安装 PA Agent 技能，
   然后在对应工具里请求使用 PA Agent。命令行也支持 `doctor / analyze / factors / research / mine`。
-- **安装版**：双击 `PA-Agent-1.68.5-Setup-x64.exe`，按当前用户安装并创建快捷方式。
-- **绿色版**：解压 `PA-Agent-1.68.5-Portable-x64.zip`，双击 `PA-Agent.exe`。
+- **安装版**：双击 `PA-Agent-1.68.6-Setup-x64.exe`，按当前用户安装并创建快捷方式。
+- **绿色版**：解压 `PA-Agent-1.68.6-Portable-x64.zip`，双击 `PA-Agent.exe`。
   运行时与依赖已包含，无需安装 Python、激活虚拟环境或另行安装依赖。
 
 安装版数据保存在 `%LOCALAPPDATA%\PA Agent`；绿色版保存在程序旁的 `data`。

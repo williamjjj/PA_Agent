@@ -4134,6 +4134,7 @@ class MainWindow(QMainWindow):
                             "context_window": context_window,
                             "total_input": prompt_tokens,
                             "total_cached_input": cached_tokens,
+                            "cache_usage_reported": usage_total.get("cache_usage_reported"),
                             "total_output": completion_tokens,
                         }
                     )
@@ -4188,6 +4189,7 @@ class MainWindow(QMainWindow):
                     "context_window": context_window,
                     "total_input": prompt_tokens,
                     "total_cached_input": cached_tokens,
+                    "cache_usage_reported": usage_total.get("cache_usage_reported"),
                     "total_output": completion_tokens,
                 })
 

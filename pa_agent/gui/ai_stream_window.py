@@ -523,10 +523,14 @@ class AIStreamPanel(QWidget):
             self._progress_bar.setValue(0)
             self._progress_bar.setFormat("累计用量")
             self._progress_bar.setStyleSheet(_STYLE_NORMAL)
+            cached = data.get('total_cached_input', 0)
+            reported = data.get('cache_usage_reported')
+            cache_text = (f"{cached:,}" if reported is True else
+                          f"至少 {cached:,}（部分未报告）" if cached else "未报告")
             self._token_label.setText(
                 f"{capacity_text} · 累计输入 {data.get('total_input', 0):,} / "
-                f"输出 {data.get('total_output', 0):,} · 缓存 {data.get('total_cached_input', 0):,}")
-            self._token_label.setToolTip("用量由本地 agent 返回；多阶段累计用量不作为单次上下文占用百分比。")
+                f"输出 {data.get('total_output', 0):,} · 缓存 {cache_text}")
+            self._token_label.setToolTip("用量由本地 agent 返回；缓存字段缺失时显示未报告，明确返回 0 时显示 0。逐阶段原始计数保存在分析导出中。")
             return
         context_used = data.get("context_used", 0)
         context_window = data.get("context_window", 1_000_000)

@@ -298,6 +298,9 @@ def _accumulate_usage(current: dict, reply_usage: Any) -> dict:
     result["total_tokens"] = (
         result.get("total_tokens", 0) + getattr(reply_usage, "total_tokens", 0)
     )
+    reported = getattr(reply_usage, "cache_usage_reported", None)
+    if reported is not None:
+        result["cache_usage_reported"] = result.get("cache_usage_reported", True) and reported
     return result
 
 

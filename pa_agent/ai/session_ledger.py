@@ -39,6 +39,7 @@ class SessionTokenLedger(QObject):
         self.total_input: int = 0
         self.total_cached_input: int = 0
         self.total_output: int = 0
+        self.cache_usage_reported: bool | None = None
 
     @property
     def context_used(self) -> int:
@@ -49,6 +50,8 @@ class SessionTokenLedger(QObject):
         self.total_input += usage.prompt_tokens
         self.total_cached_input += usage.cached_prompt_tokens
         self.total_output += usage.completion_tokens
+        if usage.cache_usage_reported is not None:
+            self.cache_usage_reported = self.cache_usage_reported is not False and usage.cache_usage_reported
 
         pct = self.context_used / self._context_window * 100.0
 
@@ -73,6 +76,7 @@ class SessionTokenLedger(QObject):
         self.total_input = 0
         self.total_cached_input = 0
         self.total_output = 0
+        self.cache_usage_reported = None
         self._yellow_fired = False
         self._red_fired = False
 
@@ -82,6 +86,7 @@ class SessionTokenLedger(QObject):
         return {
             "total_input": self.total_input,
             "total_cached_input": self.total_cached_input,
+            "cache_usage_reported": self.cache_usage_reported,
             "total_output": self.total_output,
             "context_used": self.context_used,
             "context_window": self._context_window,

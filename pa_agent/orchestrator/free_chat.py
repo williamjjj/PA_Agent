@@ -700,6 +700,10 @@ class FreeChatSession:
             "completion_tokens": reply.usage.completion_tokens,
             "total_tokens": reply.usage.total_tokens,
         }
+        if reply.usage.cache_usage_reported is not None:
+            usage_dict["cache_usage_reported"] = reply.usage.cache_usage_reported
+        if reply.raw.get("usage_audit"):
+            usage_dict["usage_audit"] = reply.raw["usage_audit"]
         followup_turn = FollowupTurn(
             turn=turn_number,
             ts_ms=now_local_ms(),

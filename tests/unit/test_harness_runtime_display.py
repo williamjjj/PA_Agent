@@ -40,17 +40,18 @@ def test_scoped_codex_command_preserves_identity_and_speed(tmp_path, monkeypatch
     script.write_text("import json,sys\nprint(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps(sys.argv[1:])}}))")
     monkeypatch.setattr(paths, "DATA_ROOT", tmp_path)
     monkeypatch.setattr(h, "discover_harness", lambda *_: Path(sys.executable))
-    monkeypatch.setattr(h, "_command", lambda *_: [sys.executable, str(script), "-"])
+    monkeypatch.setattr(h, "_command", lambda selected, _: [sys.executable, str(script), "--model", selected.harness_model, "-"])
     monkeypatch.setattr(identity, "codex_identity", lambda *a, **k: {
         "backend":"codex", "model":"gpt-6-astra", "reasoning_effort":"max",
         "context_window":500000, "model_provider":"openai", "resolved":True,
         "isolated_config_supported":True, "service_tiers":["priority"],
         "generation_config":{"model_context_window":500000, "service_tier":"default"}})
-    client = h.LocalHarnessClient(AIProviderSettings(backend="codex", codex_speed="fast"))
+    client = h.LocalHarnessClient(AIProviderSettings(backend="codex", codex_speed="fast", harness_model="gpt-6-astra"))
     reply = client.chat([{"role":"user","content":"test"}])
     args = json.loads(reply.content)
     assert "--ignore-user-config" in args
     assert args[args.index("--model")+1] == "gpt-6-astra"
+    assert args.count("--model") == 1
     assert 'model_reasoning_effort="max"' in args
     assert 'service_tier="priority"' in args and 'model_context_window=500000' in args
     assert reply.raw["runtime_metadata"]["service_tier"] == "priority"

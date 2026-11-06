@@ -219,8 +219,10 @@ def _terminate(process: subprocess.Popen, job: _WindowsJob | None) -> None:
         process.wait(timeout=5)
 
 
-def _extract_result(backend: str, output: str) -> tuple[str, AIUsage]:
-    usage = AIUsage()
+def _extract_result(backend: str, output: str, *, usage_audit: dict | None = None) -> tuple[str, AIUsage]:
+    usage = AIUsage(cache_usage_reported=False)
+    if usage_audit is not None:
+        usage_audit.update(source=f"{backend}_cli", events=[], cache_usage_reported=False)
     if backend == "hermes":
         # Quiet mode returns the answer on stdout; diagnostics stay on stderr.
         return output.strip(), usage
@@ -250,12 +252,22 @@ def _extract_result(backend: str, output: str) -> tuple[str, AIUsage]:
                 content = str(item.get("text", ""))
         elif kind == "result" or "result" in event:
             content = str(event.get("result", ""))
-        if isinstance(event.get("usage"), dict):
+        if isinstance(event.get("usage"), dict) and (backend != "codex" or kind == "turn.completed"):
             raw = event["usage"]
             usage.prompt_tokens = int(raw.get("input_tokens", 0) or 0)
             usage.cached_prompt_tokens = int(raw.get("cached_input_tokens", 0) or 0)
             usage.completion_tokens = int(raw.get("output_tokens", 0) or 0)
             usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
+            usage.cache_usage_reported = raw.get("cached_input_tokens") is not None
+            if usage_audit is not None:
+                # Preserve the CLI's numeric counters, including cache writes,
+                # without persisting arbitrary diagnostic fields or stderr.
+                counters = {key: raw[key] for key in (
+                    "input_tokens", "cached_input_tokens", "cache_write_input_tokens",
+                    "output_tokens", "reasoning_output_tokens") if key in raw
+                    and (raw[key] is None or isinstance(raw[key], (int, float)))}
+                usage_audit["events"].append({"type": kind, "usage": counters})
+                usage_audit["cache_usage_reported"] = usage.cache_usage_reported
     if not content.strip():
         raise RuntimeError(f"{BACKENDS[backend]} 没有返回可识别的最终答案；请检查 CLI 版本和登录。")
     return content.strip(), usage
@@ -386,8 +398,9 @@ class LocalHarnessClient:
                 generation = dict(metadata.get("generation_config", {}))
                 if metadata.get("reasoning_effort"):
                     generation["model_reasoning_effort"] = metadata["reasoning_effort"]
-                overrides = ["--ignore-user-config", "--model", metadata["model"],
-                             "-c", "project_doc_max_bytes=0"]
+                overrides = ["--ignore-user-config", "-c", "project_doc_max_bytes=0"]
+                if "--model" not in command:
+                    overrides += ["--model", metadata["model"]]
                 for key, value in generation.items():
                     overrides += ["-c", key + "=" + json.dumps(value)]
                 command = command[:-1] + overrides + ["-"]
@@ -395,7 +408,9 @@ class LocalHarnessClient:
             with prompt_path.open("rb") as stdin, output_path.open("wb") as stdout, error_path.open("wb") as stderr:
                 process = _spawn_external(
                     command, stdin=stdin, stdout=stdout, stderr=stderr,
-                    cwd=root, env=env, shell=False,
+                    # Codex includes cwd in model context. Keep it stable while
+                    # temporary request files remain isolated and auto-cleaned.
+                    cwd=work_root if settings.backend == "codex" else root, env=env, shell=False,
                     creationflags=(subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
                     if os.name == "nt" else 0,
                     start_new_session=os.name != "nt",
@@ -428,7 +443,9 @@ class LocalHarnessClient:
                 error = error_path.read_text(encoding="utf-8", errors="replace")
                 if "authentication required" in error.lower() or "please login" in error.lower():
                     raise RuntimeError(f"{BACKENDS[settings.backend]} CLI 尚未登录；请先在该 CLI 完成浏览器登录。桌面登录可能不与 CLI 共用。")
-            content, usage = _extract_result(settings.backend, output_path.read_text(encoding="utf-8-sig", errors="replace"))
+            usage_audit = {}
+            content, usage = _extract_result(settings.backend,
+                output_path.read_text(encoding="utf-8-sig", errors="replace"), usage_audit=usage_audit)
         if not content:
             raise RuntimeError("本地 harness 返回了空答案。")
         # Some CLIs expose only the final answer. Emit bounded chunks without
@@ -443,4 +460,5 @@ class LocalHarnessClient:
                             "runtime_metadata": metadata, "latency_ms": latency,
                             "input_characters": sum(len(m.get("content", "")) for m in messages),
                             "transport": "local-cli", "usage_reported": usage.total_tokens > 0,
+                            "usage_audit": usage_audit,
                             "content": content})
