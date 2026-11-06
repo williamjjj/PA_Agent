@@ -113,6 +113,8 @@ class GeneralSettingsDialog(QDialog):
             "勾选后，每当有新的K线收盘时自动触发分析（与主界面「持续跟踪分析」勾选框同步）"
         )
         analysis_form.addRow("持续跟踪分析:", self._keep_analysis_check)
+        self._auto_review_check = QCheckBox("按品种和周期复盘，连续 10 次有效对比后形成经验")
+        analysis_form.addRow("增量分析经验:", self._auto_review_check)
 
         self._cancel_keep_on_retry_check = QCheckBox("重试后取消持续跟踪分析")
         self._cancel_keep_on_retry_check.setToolTip(
@@ -226,6 +228,7 @@ class GeneralSettingsDialog(QDialog):
             int(getattr(g, "incremental_max_new_bars", 10))
         )
         self._keep_analysis_check.setChecked(bool(getattr(g, "keep_analysis", False)))
+        self._auto_review_check.setChecked(g.auto_review_enabled)
         self._cancel_keep_on_retry_check.setChecked(
             bool(getattr(g, "cancel_keep_analysis_on_retry", False))
         )
@@ -260,6 +263,7 @@ class GeneralSettingsDialog(QDialog):
         g.analysis_bar_count = self._analysis_bar_count_spin.value()
         g.incremental_max_new_bars = self._incremental_max_new_bars_spin.value()
         g.keep_analysis = self._keep_analysis_check.isChecked()
+        g.auto_review_enabled = self._auto_review_check.isChecked()
         g.cancel_keep_analysis_on_retry = self._cancel_keep_on_retry_check.isChecked()
         g.last_symbol = self._last_symbol_edit.text().strip()
         g.last_timeframe = self._last_timeframe_edit.text().strip()

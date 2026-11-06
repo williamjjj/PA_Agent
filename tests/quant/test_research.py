@@ -208,8 +208,8 @@ def test_constant_factor_thresholds_do_not_generate_artificial_trades():
 
 @pytest.mark.parametrize("mutation,match", [
     ("zero_volume", "零或负成交量"), ("gap", "周期完整"), ("duplicate", "周期完整"),
-    ("weekly", "不支持周线/月线"), ("calendar_market", "连续交易现货"),
-    ("unsupported_source", "Birdeye"), ("forming", "仅接受已收盘"),
+    ("weekly", "周期完整"), ("calendar_market", "市场类型"),
+    ("missing_source", "行情来源"), ("forming", "仅接受已收盘"),
     ("timestamp_unclosed", "尚未收盘"), ("time_mismatch", "时间或成交量无效"),
     ("no_captured_at", "采集时刻"),
 ])
@@ -228,8 +228,8 @@ def test_unsupported_or_unreliable_datasets_reject(mutation, match):
         source["timeframe"] = "1w"
     elif mutation == "calendar_market":
         source["market_kind"] = "equity"
-    elif mutation == "unsupported_source":
-        source["source"] = "eastmoney"
+    elif mutation == "missing_source":
+        source["source"] = ""
     elif mutation == "forming":
         source["bars"][-1]["closed"] = False
     elif mutation == "timestamp_unclosed":

@@ -342,6 +342,8 @@ class TwoStageOrchestrator:
         exp_reader: "ExperienceReader",
         settings: Optional["Settings"] = None,
         information_context: list[dict] | None = None,
+        learning_context: dict | None = None,
+        quote_snapshot_fn: Any = None,
     ) -> None:
         self._client = client
         self._assembler = assembler
@@ -351,6 +353,10 @@ class TwoStageOrchestrator:
         self._exp_reader = exp_reader
         self._settings = settings
         self._information_context = information_context or []
+        self._learning_context = learning_context
+        self._quote_snapshot_fn = quote_snapshot_fn
+        self._review_store = None
+        self._review_summary = None
         # Set to True as soon as a provider fallback (GLM-4-flash, ...) takes
         # over. While True, schema / enum validation is relaxed: the fallback
         # model's free-text answers are accepted so the GUI can still render,
@@ -378,6 +384,56 @@ class TwoStageOrchestrator:
         return ValidationSettings()
 
     # ── Public API ────────────────────────────────────────────────────────────
+
+    def _prepare_review(self, record, frame, incremental):
+        self._review_summary = None
+        self._review_store = None
+        if not self._learning_context or not getattr(getattr(self._settings, "general", None), "auto_review_enabled", True):
+            return
+        try:
+            from pa_agent.records.rolling_review import ReviewStore
+            from pa_agent.config.paths import DATA_ROOT
+            import time
+
+            self._review_store = ReviewStore(DATA_ROOT / "learning" / "reviews.sqlite3")
+            now = int(time.time()*1000)
+            record.learning = {"enabled": True, "required": 10}
+            if incremental:
+                record.learning["evaluation"] = self._review_store.evaluate(frame, self._learning_context, as_of_ms=now)
+                self._review_summary = self._review_store.latest_summary(
+                    frame.symbol, frame.timeframe, self._learning_context, as_of_ms=now)
+                if self._review_summary:
+                    record.learning["summary_used"] = self._review_summary
+        except Exception as exc:
+            self._review_store = None
+            record.learning = {"status": "review_unavailable", "error": str(exc)}
+            logger.warning("Incremental review unavailable: %s", exc)
+
+    def _with_review(self, messages):
+        if not self._review_summary:
+            return messages
+        return [*messages, {"role": "user", "content":
+            "## 同品种同周期的已完成实盘复盘\n" + self._review_summary["text"]}]
+
+    def _finish_review(self, record, frame):
+        import time
+
+        record.meta.completed_at_ms = int(time.time()*1000)
+        response = record.stage2_response or record.stage1_response or {}
+        if response.get("runtime_metadata"):
+            record.meta.ai_provider = {**record.meta.ai_provider,
+                **{key: value for key, value in response["runtime_metadata"].items()
+                   if key in {"backend", "model", "reasoning_effort", "service_tier", "context_window"}}}
+        if self._review_store is None:
+            return
+        try:
+            quote = self._quote_snapshot_fn() if callable(self._quote_snapshot_fn) else {}
+            record.learning["registration"] = self._review_store.register(
+                record, frame, self._learning_context, quote,
+                completed_at_ms=record.meta.completed_at_ms, incremental=record.meta.incremental)
+        except Exception as exc:
+            record.learning["registration"] = {"status": "review_unavailable", "error": str(exc)}
+            logger.warning("Could not register review prediction: %s", exc)
 
     def submit(
         self,
@@ -417,6 +473,7 @@ class TwoStageOrchestrator:
         """
         # ── Step 1: Build partial record ──────────────────────────────────────
         record = _build_empty_record(frame, self._settings)
+        record.meta.incremental = previous_record is not None and int(incremental_new_bar_count or 0) > 0
         self._active_record = record
         self._current_stage = "stage1"
 
@@ -468,6 +525,7 @@ class TwoStageOrchestrator:
             return record
 
         # ── Step 3: Stage 1 started ───────────────────────────────────────────
+        self._prepare_review(record, frame, record.meta.incremental)
         on_event(OrchestratorEvent.Stage1Started)
 
         # Resolve analysis mode from settings (default: original)
@@ -493,6 +551,7 @@ class TwoStageOrchestrator:
             messages_s1 = self._assembler.build_stage1(frame, analysis_mode=analysis_mode)
 
         messages_s1 = add_information_context(messages_s1, information)
+        messages_s1 = self._with_review(messages_s1)
 
         # ── Step 5: Call AI for Stage 1 ───────────────────────────────────────
         logger.debug("\n" + "="*80)
@@ -835,6 +894,8 @@ class TwoStageOrchestrator:
                 patterns=patterns,
                 max_entries=max_exp,
                 max_chars_per_entry=max_chars,
+                symbol=frame.symbol,
+                timeframe=frame.timeframe,
             )
         else:
             experience_entries = self._exp_reader.read_top5(cycle_position)[:max_exp]
@@ -906,6 +967,7 @@ class TwoStageOrchestrator:
                     "exception": None,
                 }
             )
+            self._finish_review(record, frame)
             self._pending_writer.save_full(record)
             on_event(OrchestratorEvent.RecordSaved)
             return record
@@ -942,6 +1004,7 @@ class TwoStageOrchestrator:
 
         if information and not any("## 用户选定的外部行情与资讯资料" in str(m.get("content", "")) for m in messages_s2):
             messages_s2 = add_information_context(messages_s2, information)
+            messages_s2 = self._with_review(messages_s2)
 
         # ── Step 15: Call AI for Stage 2 ──────────────────────────────────────
         logger.debug("\n" + "="*80)
@@ -1345,6 +1408,7 @@ class TwoStageOrchestrator:
         )
 
         # ── Step 22: Persist full record ──────────────────────────────────────
+        self._finish_review(record, frame)
         self._pending_writer.save_full(record)
 
         # ── Step 23: Record saved event ───────────────────────────────────────

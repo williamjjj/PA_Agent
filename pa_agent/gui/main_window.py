@@ -328,6 +328,9 @@ class MainWindow(QMainWindow):
         self._connect_event_bus()
         self._update_ai_mode_label()
         self._sync_submit_button_state()
+        refresh_identity = getattr(self._ctx.client, "refresh_identity_background", None)
+        if callable(refresh_identity):
+            QTimer.singleShot(0, refresh_identity)
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -412,6 +415,10 @@ class MainWindow(QMainWindow):
         quant_action.triggered.connect(self._open_quant_dialog)
         menu_bar.addAction(quant_action)
 
+        review_action = QAction("增量复盘", self)
+        review_action.triggered.connect(self._open_review_dialog)
+        menu_bar.addAction(review_action)
+
         # 4. 演示模式 — 保留下拉菜单
         demo_menu = menu_bar.addMenu("演示模式")
         self._demo_manual_action = QAction("手动选择记录…", self)
@@ -429,8 +436,15 @@ class MainWindow(QMainWindow):
     def _open_quant_dialog(self) -> None:
         from pa_agent.gui.quant_dialog import QuantDialog
         dialog = QuantDialog(getattr(self._chart_widget, "_latest_frame", None),
-                             source=self._current_data_source_kind(), parent=self)
+                             source=self._current_data_source_kind(), parent=self,
+                             settings=self._ctx.settings, exchange=self._tv_exchange_text(),
+                             snapshot_provider=lambda: (self._chart_widget._latest_frame,
+                                 self._current_data_source_kind(), self._tv_exchange_text()))
         dialog.exec()
+
+    def _open_review_dialog(self) -> None:
+        from pa_agent.gui.review_dialog import ReviewDialog
+        ReviewDialog(self).exec()
 
     def _open_analysis_export(self) -> None:
         from pa_agent.gui.export_dialog import AnalysisExportDialog
@@ -1916,6 +1930,10 @@ class MainWindow(QMainWindow):
         """Display elapsed time without polling the network or blocking Qt."""
         if not hasattr(self, "_task_progress_label"):
             return
+        metadata = getattr(getattr(self._ctx, "client", None), "runtime_metadata", None)
+        if isinstance(metadata, dict):
+            self._stream_panel.set_runtime_metadata(metadata)
+            self._update_ai_mode_label()
         had_cancelling = bool(getattr(self, "_zombie_workers", []))
         self._reap_zombie_workers()
         if had_cancelling and not self._zombie_workers:
@@ -1953,6 +1971,10 @@ class MainWindow(QMainWindow):
         self._analysis_in_progress = False
         self._auto_incremental_pending = False
         self._decision_badge.setText("")
+        self._flow_bar.reset_all()
+        if self._last_frame_ready_bars:
+            self._flow_bar.set_step_status(0, "done")
+            self._flow_bar.set_step_caption(0, "已就绪")
         self._update_submit_button_state()
         self._update_task_progress()
         self._status_bar.showMessage("已取消任务，可重新获取数据或提交分析")
@@ -1994,6 +2016,13 @@ class MainWindow(QMainWindow):
         if bars:
             self._data_fetch_pending = False
             self._last_frame_ready_bars = list(bars)
+            self._ctx.market_observation = {
+                "price": float(bars[0].close), "observed_at_ms": int(time.time()*1000),
+                "symbol": self._symbol_combo.currentText().strip(),
+                "timeframe": self._tf_combo.currentText(),
+                "source": self._current_data_source_kind(), "exchange": self._tv_exchange_text(),
+                "latest_closed_ts": max((bar.ts_open for bar in bars if bar.closed), default=0),
+            }
             self._update_live_price_label(bars)
             from pa_agent.data.bar_close_wait import current_forming_ts
 
@@ -3893,6 +3922,11 @@ class MainWindow(QMainWindow):
 
     def _on_record_ready_impl(self, record: Any) -> None:
         self._last_analysis_record = record
+        for stage in ("stage2_response", "stage1_response"):
+            response = getattr(record, stage, None)
+            if isinstance(response, dict) and isinstance(response.get("runtime_metadata"), dict):
+                self._stream_panel.set_runtime_metadata(response["runtime_metadata"])
+                break
         import json as _json
 
         exc_info = getattr(record, "exception", None)
@@ -4530,7 +4564,9 @@ class MainWindow(QMainWindow):
             return
         p = settings.provider
         if p.backend != "api":
-            self._ai_mode_label.setText(f"本地 {p.backend} · {p.harness_model or '使用 harness 默认模型'}")
+            metadata = getattr(getattr(self._ctx, "client", None), "runtime_metadata", {})
+            model = metadata.get("model") if isinstance(metadata, dict) else None
+            self._ai_mode_label.setText(f"本地 {p.backend} · {model or p.harness_model or '正在识别默认模型'}")
             return
         base = (p.base_url or "").lower()
         if "deepseek.com" in base:
@@ -4777,6 +4813,10 @@ class MainWindow(QMainWindow):
                 exp_reader=exp_reader,
                 settings=settings,
                 information_context=getattr(self._ctx, "information_context", []),
+                learning_context={"source": self._current_data_source_kind(),
+                                  "exchange": self._tv_exchange_text(),
+                                  "adjustment": settings.general.kline_adjust if self._current_data_source_kind() in {"ashare", "akshare", "tushare"} else "provider"},
+                quote_snapshot_fn=lambda: dict(self._ctx.market_observation),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not build orchestrator: %s", exc)

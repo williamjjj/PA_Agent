@@ -18,11 +18,12 @@ from pa_agent.data.base import KlineBar, KlineFrame
 from pa_agent.data.snapshot import compute_indicators
 from pa_agent.quant import birdeye
 from pa_agent.quant.data import chart_data
+from pa_agent.quant.markets import MarketKind, Timeframe, TIMEFRAME_SECONDS, bar_clock
 
-DATASET_VERSION = "pa-research-ohlcv-v1"
+DATASET_VERSION = "pa-research-ohlcv-v2"
+DATASET_VERSIONS = {"pa-research-ohlcv-v1", DATASET_VERSION}
 MAX_CSV_BYTES = 2_000_000
 MIN_BARS, MAX_BARS = 300, 5000
-Timeframe = Literal["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
 _REQUIRED = {"time", "open", "high", "low", "close", "volume"}
 
 
@@ -33,10 +34,10 @@ class ResearchDataError(ValueError):
 class DatasetImport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     csv: str = Field(min_length=1, max_length=MAX_CSV_BYTES)
-    symbol: str = Field(default="BTCUSD", pattern=r"^[A-Za-z0-9._:=^/-]{1,32}$")
+    symbol: str = Field(default="BTCUSD", pattern=r"^[A-Za-z0-9._:=^/!-]{1,32}$")
     timeframe: Timeframe = "15m"
-    market_kind: Literal["continuous_spot"] = "continuous_spot"
-    instrument_id: str = Field(default="", max_length=120, pattern=r"^[A-Za-z0-9._:=^/-]*$")
+    market_kind: MarketKind = "continuous_spot"
+    instrument_id: str = Field(default="", max_length=120, pattern=r"^[A-Za-z0-9._:=^/!-]*$")
 
     @field_validator("csv")
     @classmethod
@@ -51,7 +52,7 @@ class HistoryRequest(BaseModel):
     instrument_id: str = Field(min_length=32, max_length=44)
     symbol: str = Field(default="SOL", pattern=r"^[A-Za-z0-9._:=^/-]{1,32}$")
     chain: Literal["solana"] = "solana"
-    timeframe: Timeframe = "15m"
+    timeframe: Literal["1m", "5m", "15m", "30m", "1h", "4h", "1d"] = "15m"
     start: int = Field(strict=True, ge=1)
     end: int = Field(strict=True, ge=1)
 
@@ -82,8 +83,8 @@ def _timestamp(raw):
     return int(value)
 
 
-def _validated_row(ts, values, step, now):
-    if ts % step or ts + step > now:
+def _validated_row(ts, values, step, now, *, market_kind="continuous_spot", source_closed=False):
+    if (market_kind == "continuous_spot" and ts % step) or ts > now or (not source_closed and ts + step > now):
         raise ResearchDataError("研究数据仅接受对齐周期的已收盘 K 线。")
     if not all(math.isfinite(v) for v in values):
         raise ResearchDataError("研究数据价格或成交量无效。")
@@ -99,7 +100,7 @@ def research_dataset_hash(chart):
     instrument = {key: value for key, value in chart["instrument"].items() if key != "symbol"}
     quality = chart["quality"]
     values = {
-        "version": DATASET_VERSION, "source": chart["source"], "instrument": instrument,
+        "version": chart.get("dataset_version", DATASET_VERSION), "source": chart["source"], "instrument": instrument,
         "market_kind": chart["market_kind"], "timeframe": chart["timeframe"],
         "coverage": {"start": quality.get("requested_start", quality["start"]),
                      "end": quality.get("requested_end", quality["end"])},
@@ -113,10 +114,11 @@ def research_dataset_hash(chart):
 
 
 def _dataset(rows, *, symbol, timeframe, source, instrument, captured_at, provenance,
-             duplicate_count=0, reordered=False, requested_start=None, requested_end=None):
+             duplicate_count=0, reordered=False, requested_start=None, requested_end=None,
+             market_kind="continuous_spot"):
     if not MIN_BARS <= len(rows) <= MAX_BARS:
         raise ResearchDataError("研究数据集需要 300 至 5000 根有效已收盘 K 线；缺失区间不会填充。")
-    step = birdeye.TIMEFRAMES[timeframe][1]
+    step = TIMEFRAME_SECONDS[timeframe]
     newest = [KlineBar(index + 1, row[0] * 1000, *row[1:], closed=True)
               for index, row in enumerate(reversed(rows))]
     frame = KlineFrame(symbol, timeframe, tuple(newest), compute_indicators(newest), captured_at)
@@ -134,16 +136,22 @@ def _dataset(rows, *, symbol, timeframe, source, instrument, captured_at, proven
     missing = sum(gap["missing_intervals"] for gap in gaps)
     chart = {
         **chart_data(frame), "source": source, "instrument": instrument,
-        "market_kind": "continuous_spot", "captured_at": captured_at,
+        "market_kind": market_kind, "captured_at": captured_at,
         "dataset_version": DATASET_VERSION,
         "quality": {"bar_count": len(rows), "start": start, "end": end,
                     "time_unit": "unix_seconds", "interval_seconds": step,
                     "gap_count": len(gaps), "gaps": gaps[:100], "missing_intervals": missing,
                     "zero_volume_count": sum(row[-1] == 0 for row in rows),
                     "duplicate_count": duplicate_count, "reordered": reordered,
-                    "closed_only": True},
+                    "closed_only": True, "bar_clock": bar_clock(market_kind),
+                    "calendar_verified": market_kind == "continuous_spot",
+                    "observed_interval_breaks": len(gaps)},
         "provenance": provenance,
     }
+    if market_kind != "continuous_spot":
+        chart["instrument"] = {**instrument, "asset_class": market_kind}
+        chart["quality"]["missing_intervals"] = None
+        chart["quality"]["interval_break_classification"] = "sessions_or_missing_data_not_inferred"
     if requested_start is not None:
         chart["quality"].update(requested_start=requested_start, requested_end=requested_end)
     chart["dataset_hash"] = research_dataset_hash(chart)
@@ -169,7 +177,7 @@ def parse_dataset_csv(data: DatasetImport, *, source: Literal["csv", "demo"] = "
     if not headers or len(headers) != 6 or set(headers) != _REQUIRED:
         raise ResearchDataError("研究 CSV 必须包含且仅包含 time,open,high,low,close,volume 六列。")
     now = time.time()
-    step = birdeye.TIMEFRAMES[data.timeframe][1]
+    step = TIMEFRAME_SECONDS[data.timeframe]
     rows, order, duplicates = {}, [], 0
     for index, row in enumerate(_csv_rows(reader), 2):
         if index > 10_001:
@@ -179,7 +187,7 @@ def parse_dataset_csv(data: DatasetImport, *, source: Literal["csv", "demo"] = "
                 raise ValueError
             ts = _timestamp(row["time"])
             values = [float(row[key]) for key in ("open", "high", "low", "close", "volume")]
-            bar = _validated_row(ts, values, step, now)
+            bar = _validated_row(ts, values, step, now, market_kind=data.market_kind)
         except (ValueError, TypeError, KeyError, OverflowError, OSError):
             raise ResearchDataError(f"研究 CSV 第 {index} 行无效；请检查价格、成交量、周期对齐和已收盘时间。") from None
         if ts in rows:
@@ -202,19 +210,19 @@ def parse_dataset_csv(data: DatasetImport, *, source: Literal["csv", "demo"] = "
                                 "market_identity_verified": False, "timestamps": "UTC",
                                 "missing_data_policy": "preserve_gaps_no_fill",
                                 "market_kind_declaration": data.market_kind},
-                    duplicate_count=duplicates, reordered=order != sorted(order))
+                    duplicate_count=duplicates, reordered=order != sorted(order), market_kind=data.market_kind)
 
 
 def dataset_from_snapshot(chart, *, market_kind="continuous_spot"):
     """Canonicalize an owned frozen snapshot without refetching its market data."""
     from pa_agent.quant.snapshots import instrument_for_chart
 
-    if market_kind != "continuous_spot" or chart.get("source") not in ("csv", "demo", "birdeye"):
-        raise ResearchDataError("当前研究仅支持声明为连续现货的 CSV、示例或 Birdeye 数据。")
+    if market_kind not in ("continuous_spot", "stock", "futures", "forex"):
+        raise ResearchDataError("请选择现货、股票、期货或外汇市场。")
     timeframe = chart.get("timeframe")
-    if timeframe not in birdeye.TIMEFRAMES:
-        raise ResearchDataError("当前研究仅支持 1 分钟至 1 日的固定 K 线周期。")
-    step = birdeye.TIMEFRAMES[timeframe][1]
+    if timeframe not in TIMEFRAME_SECONDS:
+        raise ResearchDataError("研究不支持该 K 线周期。")
+    step = TIMEFRAME_SECONDS[timeframe]
     captured = chart.get("captured_at", int(time.time() * 1000))
     rows = []
     try:
@@ -229,7 +237,8 @@ def dataset_from_snapshot(chart, *, market_kind="continuous_spot"):
             ts = values[0] / 1000
             if not math.isfinite(ts) or ts != int(ts) or ts <= 0:
                 raise ValueError
-            row = _validated_row(int(ts), values[1:], step, min(captured / 1000, time.time()))
+            row = _validated_row(int(ts), values[1:], step, min(captured / 1000, time.time()),
+                                 market_kind=market_kind, source_closed=market_kind != "continuous_spot")
             if rows and row[0] <= rows[-1][0]:
                 raise ValueError
             rows.append(row)
@@ -246,6 +255,7 @@ def dataset_from_snapshot(chart, *, market_kind="continuous_spot"):
     return _dataset(rows, symbol=chart["symbol"], timeframe=timeframe, source=chart["source"],
                     instrument=instrument_for_chart(chart), captured_at=int(captured),
                     requested_start=requested_start, requested_end=requested_end,
+                    market_kind=market_kind,
                     provenance={"kind": "frozen_snapshot", "source": chart["source"],
                                 "original_dataset_hash": chart.get("dataset_hash"),
                                 "original_snapshot_id": chart.get("snapshot_id"),

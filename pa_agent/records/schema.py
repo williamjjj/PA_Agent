@@ -21,6 +21,8 @@ class RecordMeta(BaseModel):
     bar_count: int
     ai_provider: dict         # Sanitized provider config snapshot (no plaintext API key)
     decision_stance: str = "conservative"  # conservative | balanced | aggressive | extreme_aggressive
+    completed_at_ms: Optional[int] = None
+    incremental: bool = False
 
 
 class AnalysisRecord(BaseModel):
@@ -43,6 +45,7 @@ class AnalysisRecord(BaseModel):
     usage_total: dict                   # Cumulative usage for audit
     information_context: list[dict] = Field(default_factory=list)
     stage_attempts: list[dict] = Field(default_factory=list)
+    learning: dict = Field(default_factory=dict)
 
 
 class FollowupTurn(BaseModel):

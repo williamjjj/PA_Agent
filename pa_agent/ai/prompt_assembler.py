@@ -976,6 +976,17 @@ class PromptAssembler:
     # ── K-line table rendering ────────────────────────────────────────────────
 
     @staticmethod
+    def _compact_table(lines: list[str]) -> str:
+        """Remove presentation padding, preserving every table cell verbatim."""
+        compact = ["（数据表为 TSV：列以制表符分隔；全部数值、序号及特征均保留。）"]
+        for line in lines:
+            if line and set(line) <= {"-", "+"}:
+                continue
+            compact.append("\t".join(cell.strip() for cell in line.split("|"))
+                           if "|" in line else line)
+        return "\n".join(compact)
+
+    @staticmethod
     def _render_kline_table(frame: KlineFrame, limit: int | None = None) -> str:
         """Render the K-line data as a text table (newest bar first)."""
         lines = [
@@ -996,7 +1007,7 @@ class PromptAssembler:
                 f"{ema_str:<10} | {atr_str}"
             )
         lines.append(_KLINE_INDICATOR_NOTE)
-        return "\n".join(lines)
+        return PromptAssembler._compact_table(lines)
 
     @staticmethod
     def _render_kline_feature_table(frame: KlineFrame, limit: int | None = None) -> str:
@@ -1028,7 +1039,7 @@ class PromptAssembler:
                 f"{feat.volume_state}"
             )
         lines.append(_KLINE_INDICATOR_NOTE)
-        return "\n".join(lines)
+        return PromptAssembler._compact_table(lines)
 
     @staticmethod
     def _render_simple_market_features_block(frame: KlineFrame) -> str:

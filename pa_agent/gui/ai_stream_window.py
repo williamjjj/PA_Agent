@@ -82,6 +82,7 @@ class AIStreamPanel(QWidget):
         self._worker: Optional[_ChatWorker] = None
         self._sending = False
         self._settings: Optional["Settings"] = None
+        self._runtime_metadata: dict = {}
 
         self._stage: str = ""
         self._reasoning_chars = 0
@@ -234,14 +235,33 @@ class AIStreamPanel(QWidget):
 
     def bind_settings(self, settings: Optional["Settings"]) -> None:
         self._settings = settings
+        self._runtime_metadata = {}
         self._apply_stream_font()
         self._refresh_mode_label()
+
+    def set_runtime_metadata(self, metadata: dict) -> None:
+        if metadata != self._runtime_metadata:
+            self._runtime_metadata = dict(metadata)
+            self._refresh_mode_label()
 
     def _refresh_mode_label(self) -> None:
         if self._settings is None:
             self._mode_label.setText("")
             return
         p = self._settings.provider
+        backend = self._runtime_metadata.get("backend") or getattr(p, "backend", "api")
+        if backend != "api":
+            names = {"codex": "Codex", "workbuddy": "WorkBuddy", "hermes": "Hermes"}
+            model = self._runtime_metadata.get("model") or p.harness_model
+            if not model or model == "harness-default":
+                model = "正在识别默认模型" if backend == "codex" else "harness 默认模型"
+            effort = self._runtime_metadata.get("reasoning_effort")
+            suffix = f" · 推理强度 {effort}" if effort else ""
+            tier = self._runtime_metadata.get("service_tier")
+            if tier:
+                suffix += " · " + ("Fast" if tier == "priority" else "标准" if tier == "default" else tier)
+            self._mode_label.setText(f"本地 {names.get(backend, backend)} · {model}{suffix}")
+            return
         base = (p.base_url or "").lower()
         if "deepseek.com" in base:
             thinking = "enabled" if p.thinking else "disabled"
@@ -495,6 +515,19 @@ class AIStreamPanel(QWidget):
         self._cancel_token = cancel_token
 
     def update_token_display(self, data: dict) -> None:
+        backend = self._runtime_metadata.get("backend") or getattr(
+            getattr(self._settings, "provider", None), "backend", "api")
+        if backend != "api":
+            capacity = self._runtime_metadata.get("context_window")
+            capacity_text = f"单次上下文上限 {capacity:,}" if capacity else "上下文由 agent 管理"
+            self._progress_bar.setValue(0)
+            self._progress_bar.setFormat("累计用量")
+            self._progress_bar.setStyleSheet(_STYLE_NORMAL)
+            self._token_label.setText(
+                f"{capacity_text} · 累计输入 {data.get('total_input', 0):,} / "
+                f"输出 {data.get('total_output', 0):,} · 缓存 {data.get('total_cached_input', 0):,}")
+            self._token_label.setToolTip("用量由本地 agent 返回；多阶段累计用量不作为单次上下文占用百分比。")
+            return
         context_used = data.get("context_used", 0)
         context_window = data.get("context_window", 1_000_000)
         total_input = data.get("total_input", 0)

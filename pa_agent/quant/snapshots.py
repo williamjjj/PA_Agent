@@ -29,6 +29,8 @@ def dataset_hash(chart):
               "instrument": instrument_for_chart(chart), "symbol": chart["symbol"],
               "timeframe": chart["timeframe"], "bars": chart["bars"],
               "adjustment": chart.get("adjustment", "unspecified")}
+    if chart.get("market_kind") not in (None, "continuous_spot"):
+        values["market_kind"] = chart["market_kind"]
     encoded = json.dumps(values, sort_keys=True, ensure_ascii=True, allow_nan=False,
                          separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -36,7 +38,7 @@ def dataset_hash(chart):
 
 def factor_evidence(chart):
     try:
-        evidence = quant.compute_factors(restore_frame(chart))
+        evidence = quant.compute_factors(restore_frame(chart), market_kind=chart.get("market_kind", "continuous_spot"))
         # Serialization is part of validity: never persist NaN as numeric evidence.
         json.dumps(evidence, allow_nan=False)
     except Exception:
@@ -50,6 +52,7 @@ def factor_evidence(chart):
     if chart["source"] == "csv":
         flags.append({"code": "user_supplied", "message": "此快照来自用户上传，市场身份与数据来源未经独立核验。"})
     return {**evidence, "quality_flags": flags, "source": chart["source"],
+            "market_kind": chart.get("market_kind", "continuous_spot"), "timeframe": chart["timeframe"],
             "instrument": instrument_for_chart(chart), "dataset_hash": chart["dataset_hash"],
             "dataset_version": DATASET_VERSION}
 

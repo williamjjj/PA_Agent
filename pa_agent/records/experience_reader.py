@@ -79,7 +79,7 @@ class ExperienceReader:
     # Public API
     # ------------------------------------------------------------------
 
-    def read_top5(self, cycle_position: str) -> list[ExperienceEntry]:
+    def read_top5(self, cycle_position: str, *, symbol: str = "", timeframe: str = "") -> list[ExperienceEntry]:
         """Return the 5 most-recent experience entries for *cycle_position*.
 
         Scans both ``success_cases/`` and ``failure_cases/`` subdirectories
@@ -114,6 +114,8 @@ class ExperienceReader:
                     continue
                 # Skip non-JSON files and hidden files like .gitkeep
                 if file_path.suffix.lower() != ".json":
+                    continue
+                if symbol and timeframe and not file_path.name.endswith(f"_{symbol}_{timeframe}.json"):
                     continue
 
                 ts_ms = _parse_timestamp_ms(file_path.name)
@@ -154,9 +156,11 @@ class ExperienceReader:
         patterns: list[str] | None = None,
         max_entries: int = 3,
         max_chars_per_entry: int = 400,
+        symbol: str = "",
+        timeframe: str = "",
     ) -> list[ExperienceEntry]:
         """Return recent experience entries filtered for Stage 2 relevance."""
-        entries = self.read_top5(cycle_position)
+        entries = self.read_top5(cycle_position, symbol=symbol, timeframe=timeframe)
         if not entries:
             return []
 

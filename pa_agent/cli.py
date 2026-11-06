@@ -17,8 +17,22 @@ def _read_json(path: str) -> dict:
 
 def _load_chart(args, *, research: bool = False) -> dict:
     from pa_agent.quant.local import demo_dataset
+    from pa_agent.quant.markets import infer_market
+    from pa_agent.quant.snapshots import dataset_hash
+
+    def identify(chart):
+        selected = getattr(args, "market_kind", None)
+        market = selected or chart.get("market_kind") or infer_market(
+            chart.get("source", ""), chart.get("symbol", ""),
+            chart.get("request", {}).get("exchange", getattr(args, "exchange", "") if args.source else ""))
+        if market != chart.get("market_kind"):
+            chart = dict(chart, market_kind=market)
+            chart.pop("dataset_version", None)
+            chart["dataset_hash"] = dataset_hash(chart)
+        return chart
+
     if args.demo:
-        return demo_dataset()
+        return identify(demo_dataset())
     if args.input:
         path = Path(args.input)
         if path.suffix.lower() == ".csv":
@@ -27,15 +41,16 @@ def _load_chart(args, *, research: bool = False) -> dict:
             csv = path.read_text(encoding="utf-8-sig")
             if research:
                 from pa_agent.quant.research_data import DatasetImport, parse_dataset_csv
-                return parse_dataset_csv(DatasetImport(csv=csv, symbol=args.symbol, timeframe=args.timeframe))
+                return parse_dataset_csv(DatasetImport(csv=csv, symbol=args.symbol, timeframe=args.timeframe,
+                    market_kind=getattr(args, "market_kind", None) or "continuous_spot"))
             from pa_agent.quant.data import ImportRequest, parse_csv, chart_data
             from pa_agent.quant.snapshots import dataset_hash
             chart = chart_data(parse_csv(ImportRequest(csv=csv, symbol=args.symbol, timeframe=args.timeframe)))
             chart.update(source="csv", captured_at=__import__('time').time()*1000)
             chart["dataset_hash"] = dataset_hash(chart)
-            return chart
+            return identify(chart)
         value = _read_json(args.input)
-        return value.get("dataset", value)
+        return identify(value.get("dataset", value))
     if args.source:
         from pa_agent.data.factory import create_data_source
         from pa_agent.data.snapshot import take_snapshot_from_bars
@@ -47,12 +62,13 @@ def _load_chart(args, *, research: bool = False) -> dict:
             if args.source == "tradingview":
                 source.set_exchange(args.exchange)
             source.subscribe(args.symbol, args.timeframe)
-            frame = take_snapshot_from_bars(source.latest_snapshot(args.bars+55), args.bars,
+            frame = take_snapshot_from_bars([bar for bar in source.latest_snapshot(args.bars+55) if bar.closed], args.bars,
                                             args.symbol, args.timeframe)
             chart = chart_data(frame)
-            chart.update(source=args.source, captured_at=frame.snapshot_ts_local_ms)
+            chart.update(source=args.source, captured_at=frame.snapshot_ts_local_ms,
+                         request={"exchange": args.exchange}, adjustment="provider")
             chart["dataset_hash"] = dataset_hash(chart)
-            return chart
+            return identify(chart)
         finally:
             source.disconnect()
     raise ValueError("请选择 --input、--demo 或 --source。")
@@ -91,7 +107,9 @@ def analyze(args, cancel):
                                     full_frame.symbol, full_frame.timeframe)
     from pa_agent.quant.data import chart_data
     from pa_agent.quant.snapshots import dataset_hash
-    chart = {**chart_data(frame), "source":chart["source"], "captured_at":frame.snapshot_ts_local_ms}
+    chart = {**chart_data(frame), "source":chart["source"], "captured_at":frame.snapshot_ts_local_ms,
+             "market_kind":chart.get("market_kind", "continuous_spot"),
+             "request":chart.get("request", {}), "adjustment":chart.get("adjustment", "provider")}
     chart["dataset_hash"] = dataset_hash(chart)
     exp = ExperienceReader(experience_dir=EXPERIENCE_DIR)
     writer = PendingWriter(pending_dir=RECORDS_PENDING_DIR, api_key=settings.provider.api_key)
@@ -140,6 +158,8 @@ def main(argv=None) -> int:
         item.add_argument("--symbol", default="BTCUSD")
         item.add_argument("--timeframe", default="1h")
         item.add_argument("--exchange", default="OANDA")
+        item.add_argument("--market-kind", choices=["continuous_spot", "stock", "futures", "forex"],
+                          help="市场类型；行情来源可自动推断，CSV 股票/期货请明确指定")
         item.add_argument("--bars", type=int, default=100)
         item.add_argument("--output", help="保存完整 JSON 结果")
         item.add_argument("--config", help="研究或挖掘配置 JSON")

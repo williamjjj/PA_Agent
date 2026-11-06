@@ -217,6 +217,7 @@ def build_export(record, *, sections=None, followups=(), warnings=(), secrets=()
         content["routing"] = {
             "策略文件": record.get("strategy_files_used", []),
             "参考经验": record.get("experience_loaded", []),
+            "增量复盘": record.get("learning", {}),
         }
     if "stage2" in selected:
         content["stage2"] = stage2

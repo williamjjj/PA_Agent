@@ -91,6 +91,13 @@ class AIModelSettingsDialog(QDialog):
         self._harness_model = QLineEdit()
         self._harness_model.setPlaceholderText("留空使用 harness 自己的默认模型")
         harness_form.addRow("模型（可选）：", self._harness_model)
+        self._codex_speed = QComboBox()
+        for label, value in (("跟随 Codex 设置", "follow"), ("标准", "standard"),
+                             ("Fast（更快，消耗更多额度）", "fast")):
+            self._codex_speed.addItem(label, value)
+        self._codex_speed.setToolTip("仅调整 Codex 的服务速度，保留实际模型和推理强度。Fast 的可用性及额度消耗以 Codex 账户为准。")
+        harness_form.addRow("Codex 速度：", self._codex_speed)
+        self._harness_form = harness_form
         self._harness_config_dir = QLineEdit()
         self._harness_config_dir.setPlaceholderText("WorkBuddy / CodeBuddy 专用配置目录；通常留空")
         harness_form.addRow("配置目录（可选）：", self._harness_config_dir)
@@ -174,6 +181,7 @@ class AIModelSettingsDialog(QDialog):
         self._backend_combo.setCurrentIndex(self._backend_combo.findData(p.backend))
         self._harness_path.setText(p.harness_executable)
         self._harness_model.setText(p.harness_model)
+        self._codex_speed.setCurrentIndex(self._codex_speed.findData(p.codex_speed))
         self._harness_config_dir.setText(p.harness_config_dir)
         self._previous_backend = p.backend
         self._backend_combo.blockSignals(False)
@@ -216,6 +224,7 @@ class AIModelSettingsDialog(QDialog):
         backend = self._backend_combo.currentData()
         local = backend != "api"
         self._harness_group.setVisible(local)
+        self._harness_form.setRowVisible(self._codex_speed, backend == "codex")
         for field in (self._model_edit, self._base_url_edit, self._api_key_edit,
                       self._show_key_btn, self._thinking_check, self._reasoning_effort_combo,
                       self._api_key_help_btn, self._agent_tutorial_btn):
@@ -239,6 +248,7 @@ class AIModelSettingsDialog(QDialog):
         backend = self._backend_combo.currentData()
         self._remember_harness()
         p.harness_profiles = self._harness_profiles
+        p.codex_speed = self._codex_speed.currentData()
         if backend != "api":
             from pa_agent.ai.local_harness import discover_harness
             path = self._harness_path.text().strip()

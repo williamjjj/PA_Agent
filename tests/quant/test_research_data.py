@@ -157,8 +157,9 @@ def test_csv_rejects_unclosed_row_and_duplicate_headers(monkeypatch):
 def test_csv_bytes_and_unverified_metadata_are_explicit():
     with pytest.raises(ValueError, match="2 MB"):
         csv_request(csv="汉" * 700_000)
+    assert parse_dataset_csv(csv_request(market_kind="stock"))["market_kind"] == "stock"
     with pytest.raises(ValueError):
-        csv_request(market_kind="stock")
+        csv_request(market_kind="unknown_market")
     with pytest.raises(ValueError):
         csv_request(source="birdeye")
     chart = parse_dataset_csv(csv_request(instrument_id=birdeye.WRAPPED_SOL))
@@ -186,8 +187,8 @@ def test_snapshot_canonicalization_preserves_frozen_identity_and_source():
     assert frozen["provenance"]["original_snapshot_id"] == "original-snapshot"
     with pytest.raises(ResearchDataError, match="300 至 5000"):
         dataset_from_snapshot({**original, "bars": original["bars"][:299]})
-    with pytest.raises(ResearchDataError, match="当前研究仅支持"):
-        dataset_from_snapshot({**original, "source": "eastmoney"})
+    stock = dataset_from_snapshot({**original, "source": "eastmoney"}, market_kind="stock")
+    assert stock["source"] == "eastmoney" and stock["market_kind"] == "stock"
     changed = copy.deepcopy(original)
     changed["bars"][0]["closed"] = False
     with pytest.raises(ResearchDataError, match="未收盘"):

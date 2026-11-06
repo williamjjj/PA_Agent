@@ -268,11 +268,49 @@ class LocalHarnessClient:
         self._log = logger_ or logging.getLogger(__name__)
         self._lock = threading.Lock()
         self.progress_text = ""
+        self.runtime_metadata = {"backend": settings.backend, "model": settings.harness_model or None}
+        self._identity_lock = threading.Lock()
+        self._identity_updated = 0.0
 
     def update_provider(self, settings: AIProviderSettings) -> None:
         if settings.backend == "api":
             raise ValueError("本地 harness 不会自动切换到 API；请在模型设置中明确选择。")
         self._settings = settings
+        self.runtime_metadata = {"backend": settings.backend, "model": settings.harness_model or None}
+        self._identity_updated = 0.0
+        self.refresh_identity_background()
+
+    def _resolve_identity(self, settings, executable):
+        if settings.backend != "codex":
+            return {"backend": settings.backend, "model": settings.harness_model or None}
+        with self._identity_lock:
+            if self._identity_updated and time.monotonic() - self._identity_updated < 60:
+                return dict(self.runtime_metadata)
+            try:
+                from pa_agent.ai.harness_identity import codex_identity
+                from pa_agent.config.paths import DATA_ROOT
+                metadata = codex_identity(executable, DATA_ROOT / "harness-work",
+                                          requested_model=settings.harness_model)
+                if settings.codex_speed != "follow":
+                    tier = "priority" if settings.codex_speed == "fast" else "default"
+                    metadata["service_tier"] = tier
+                    metadata["generation_config"]["service_tier"] = tier
+            except Exception:
+                metadata = {"backend": "codex", "model": settings.harness_model or None,
+                            "resolved": False}
+                self._log.info("Codex runtime model metadata is temporarily unavailable")
+            self.runtime_metadata = metadata
+            self._identity_updated = time.monotonic()
+            return dict(metadata)
+
+    def refresh_identity_background(self):
+        if self._settings.backend != "codex" or self._identity_lock.locked():
+            return
+        settings = self._settings.model_copy(deep=True)
+        executable = discover_harness(settings.backend, settings.harness_executable)
+        if executable:
+            threading.Thread(target=self._resolve_identity, args=(settings, executable),
+                             daemon=True, name="pa-agent-model-identity").start()
 
     def chat(self, messages: list[dict[str, Any]], **kwargs: Any) -> AIReply:
         return self.stream_chat(messages, **kwargs)
@@ -301,6 +339,12 @@ class LocalHarnessClient:
         executable = discover_harness(settings.backend, settings.harness_executable)
         if executable is None:
             raise RuntimeError(f"未找到 {BACKENDS[settings.backend]} CLI。请先安装并登录，或在模型设置中指定实际入口。")
+        metadata = self._resolve_identity(settings, executable)
+        if (settings.backend == "codex" and settings.codex_speed == "fast"
+                and metadata.get("resolved") and "priority" not in metadata.get("service_tiers", [])):
+            raise ValueError("当前 Codex 模型没有提供 Fast 速度，请选择标准或跟随 Codex。")
+        if cancel_token is not None and cancel_token.is_set():
+            raise CancelledError("本地分析已取消")
         from pa_agent.config.paths import DATA_ROOT
         work_root = DATA_ROOT / "harness-work"
         work_root.mkdir(parents=True, exist_ok=True)
@@ -330,9 +374,27 @@ class LocalHarnessClient:
             prompt_path = root / "prompt.txt"
             prompt_path.write_text(_prompt(messages), encoding="utf-8")
             output_path, error_path = root / "stdout.txt", root / "stderr.txt"
+            command = _command(settings, executable)
+            if settings.backend == "codex" and settings.codex_speed != "follow":
+                tier = "priority" if settings.codex_speed == "fast" else "default"
+                command = command[:-1] + ["-c", "service_tier=" + json.dumps(tier), "-"]
+            if (settings.backend == "codex" and metadata.get("resolved")
+                    and metadata.get("model_provider") == "openai"
+                    and metadata.get("isolated_config_supported")):
+                # Preserve the selected model and generation settings. Omit
+                # unrelated user MCP/plugin setup for this data-only invocation.
+                generation = dict(metadata.get("generation_config", {}))
+                if metadata.get("reasoning_effort"):
+                    generation["model_reasoning_effort"] = metadata["reasoning_effort"]
+                overrides = ["--ignore-user-config", "--model", metadata["model"],
+                             "-c", "project_doc_max_bytes=0"]
+                for key, value in generation.items():
+                    overrides += ["-c", key + "=" + json.dumps(value)]
+                command = command[:-1] + overrides + ["-"]
+                metadata["invocation_scope"] = "analysis_only_preserve_model_and_effort"
             with prompt_path.open("rb") as stdin, output_path.open("wb") as stdout, error_path.open("wb") as stderr:
                 process = _spawn_external(
-                    _command(settings, executable), stdin=stdin, stdout=stdout, stderr=stderr,
+                    command, stdin=stdin, stdout=stdout, stderr=stderr,
                     cwd=root, env=env, shell=False,
                     creationflags=(subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
                     if os.name == "nt" else 0,
@@ -377,6 +439,8 @@ class LocalHarnessClient:
         latency = (time.monotonic() - started) * 1000
         return AIReply(content=content, reasoning_content="", usage=usage,
                        request_id=request_id, latency_ms=latency,
-                       raw={"backend": settings.backend, "model": settings.harness_model or "harness-default",
+                       raw={"backend": settings.backend, "model": metadata.get("model") or "harness-default",
+                            "runtime_metadata": metadata, "latency_ms": latency,
+                            "input_characters": sum(len(m.get("content", "")) for m in messages),
                             "transport": "local-cli", "usage_reported": usage.total_tokens > 0,
                             "content": content})

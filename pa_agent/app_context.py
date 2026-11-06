@@ -17,6 +17,7 @@ class AppContext:
     # Data layer
     data_source: Any = None       # DataSource implementation
     information_context: list[dict] = field(default_factory=list)
+    market_observation: dict = field(default_factory=dict)
 
     # AI / orchestration layer
     client: Any = None            # DeepSeekClient

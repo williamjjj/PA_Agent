@@ -463,5 +463,10 @@ class TradingViewSource(DataSource):
 
 
 def _row_ts_ms(row) -> int:
-    """Extract bar open time in milliseconds from a tvDatafeed DataFrame row."""
-    return datetime_to_ts_ms(getattr(row, "datetime", None))
+    """Reverse tvDatafeed's datetime.fromtimestamp (naive host-local time)."""
+    value = getattr(row, "datetime", None)
+    if callable(getattr(value, "to_pydatetime", None)):
+        value = value.to_pydatetime()
+    if callable(getattr(value, "timestamp", None)):
+        return int(value.timestamp() * 1000)
+    return datetime_to_ts_ms(value)

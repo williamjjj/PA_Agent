@@ -326,7 +326,7 @@ def test_stage2_continuation_is_standalone_not_stage1_chat(assembler: PromptAsse
     assert "你现在只执行阶段一" not in s2_user
     assert "沿用上一轮阶段一用户消息" not in s2_user
     assert "K线数据" in s2_user
-    assert "序号 | 时间" in s2_user
+    assert "序号\t时间" in s2_user
     assert "下跌通道分析识别" in s2_user
     assert "上涨通道分析识别" not in s2_user
     assert "【最后一步·必做】" in s2_user
@@ -612,8 +612,8 @@ def test_render_kline_feature_table_limit_uses_full_window_header(
     table = assembler._render_kline_feature_table(frame, limit=2)
     assert "完整窗口计算" in table
     assert "勿逐点对比" in table
-    assert table.count("序号 | 类型") == 1
-    assert "K2" in table or " 2 " in table
+    assert table.count("序号\t类型") == 1
+    assert "\n2\t" in table
 
 
 # ── T13: Prompt assembler tests for next_bar_prediction ──────────────────────

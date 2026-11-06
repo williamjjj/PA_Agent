@@ -22,6 +22,7 @@ class AIProviderSettings(BaseModel):
     harness_config_dir: str = ""
     harness_profiles: dict[str, dict[str, str]] = Field(default_factory=dict)
     harness_timeout_seconds: int = Field(default=600, ge=10, le=3600)
+    codex_speed: Literal["follow", "standard", "fast"] = "follow"
 
     model: str = "deepseek-flash"
     base_url: str = "https://api.deepseek.com"
@@ -80,6 +81,7 @@ class GeneralSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     analysis_bar_count: int = Field(default=100, ge=2, le=5000)
+    auto_review_enabled: bool = True
     refresh_interval_ms: int = 1000
     context_warning_threshold_pct: float = 99_999_999.0
     last_data_source: str = "mt5"

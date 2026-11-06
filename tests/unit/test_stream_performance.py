@@ -33,6 +33,10 @@ def test_chat_workers_release_qobjects_after_many_turns(qtbot):
     host=QWidget(); qtbot.addWidget(host)
     for _ in range(20):
         worker=_ChatWorker(Session(),'test',CancelToken(),parent=host)
+        completed = []
+        QThread.finished.__get__(worker).connect(lambda: completed.append(True))
         QThread.finished.__get__(worker).connect(worker.deleteLater)
-        with qtbot.waitSignal(QThread.finished.__get__(worker),timeout=5000): worker.start()
-        qtbot.waitUntil(lambda:len(host.findChildren(QThread))==0)
+        worker.start()
+        # Observe the host, not a signal wrapper whose QObject deleteLater has
+        # already freed before pytest-qt disconnects it (Qt 6.12 on Windows).
+        qtbot.waitUntil(lambda:bool(completed) and len(host.findChildren(QThread))==0)

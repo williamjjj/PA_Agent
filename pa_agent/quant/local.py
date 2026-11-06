@@ -39,7 +39,7 @@ def mine_local(chart: dict, config: MiningConfig, *, checkpoint_path: Path,
     previous = json.loads(checkpoint_path.read_text(encoding="utf-8")) if checkpoint_path.is_file() else None
     # Include code identity, as in the web worker, to reject incompatible resumes.
     digest = hashlib.sha256()
-    for name in ("mining.py", "formula.py", "research.py", "quant.py", "research_data.py", "local.py"):
+    for name in ("mining.py", "formula.py", "research.py", "quant.py", "research_data.py", "local.py", "markets.py"):
         digest.update(Path(__file__).with_name(name).read_bytes())
     code_hash = digest.hexdigest()
     if previous and previous["code_hash"] != code_hash:
@@ -64,6 +64,10 @@ def mine_local(chart: dict, config: MiningConfig, *, checkpoint_path: Path,
 
 def run_job(kind: str, chart: dict, config: dict, directory: Path, *, cancel=None, progress=None) -> dict:
     directory.mkdir(parents=True, exist_ok=True)
+    if kind in {"research", "mine"}:
+        from pa_agent.quant.research_data import DATASET_VERSIONS, dataset_from_snapshot
+        if chart.get("dataset_version") not in DATASET_VERSIONS:
+            chart = dataset_from_snapshot(chart, market_kind=chart.get("market_kind", "continuous_spot"))
     identity = hashlib.sha256(json.dumps({"kind":kind, "data":chart["dataset_hash"], "config":config},
                                         sort_keys=True).encode()).hexdigest()
     atomic_json(directory / "datasets" / (chart["dataset_hash"] + ".json"), chart)

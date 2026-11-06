@@ -12,13 +12,13 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from pa_agent.quant.quant import FEATURE_VERSION, _validated_bars, compute_factors
-from pa_agent.quant.research_data import DATASET_VERSION, research_dataset_hash
+from pa_agent.quant.research_data import DATASET_VERSIONS, research_dataset_hash
+from pa_agent.quant.markets import TIMEFRAME_SECONDS
 from pa_agent.quant.snapshots import dataset_hash
 from pa_agent.quant.sources import restore_frame
 
-ENGINE_VERSION = "pa-research-v1"
-_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800,
-            "1h": 3600, "4h": 14_400, "1d": 86_400}
+ENGINE_VERSION = "pa-research-v2"
+_SECONDS = TIMEFRAME_SECONDS
 
 
 class ResearchConfig(BaseModel):
@@ -33,6 +33,9 @@ class ResearchConfig(BaseModel):
     initial_capital: float = Field(default=10_000, gt=0, le=1e9)
     fee_bps: float = Field(default=10, ge=0, le=500)
     slippage_bps: float = Field(default=10, ge=0, le=500)
+    position_mode: Literal["long_only", "short_only", "long_short"] = "long_only"
+    quantity_step: float = Field(default=0, ge=0, le=1e6)
+    contract_multiplier: float = Field(default=1, gt=0, le=1e6)
 
     @model_validator(mode="after")
     def coherent_ranges(self):
@@ -53,13 +56,14 @@ def _quantile(values: list[float], probability: float) -> float:
 
 
 def _validate_chart(chart: dict) -> tuple[list[dict], int]:
-    if chart.get("market_kind") != "continuous_spot":
-        raise ValueError("回测仅支持明确声明为 continuous_spot 的连续交易现货模型。")
-    if chart.get("source") not in {"birdeye", "csv", "demo"}:
-        raise ValueError("此阶段只接受 Birdeye 或已声明连续现货假设的 CSV/示例数据。")
+    market_kind = chart.get("market_kind")
+    if market_kind not in {"continuous_spot", "stock", "futures", "forex"}:
+        raise ValueError("回测需要明确的现货、股票、期货或外汇市场类型。")
+    if not chart.get("source"):
+        raise ValueError("研究数据缺少行情来源。")
     seconds = _SECONDS.get(chart.get("timeframe"))
     if seconds is None:
-        raise ValueError("研究回测仅支持 1m 至 1d 的固定周期，不支持周线/月线或交易日历市场。")
+        raise ValueError("研究回测不支持该 K 线周期。")
     bars = chart.get("bars")
     if not isinstance(bars, list) or not 300 <= len(bars) <= 5000:
         raise ValueError("研究需要 300 至 5000 根已收盘 K 线。")
@@ -68,7 +72,7 @@ def _validate_chart(chart: dict) -> tuple[list[dict], int]:
             not math.isfinite(captured) or captured <= 0):
         raise ValueError("研究数据必须保存有效的采集时刻。")
     try:
-        actual_hash = (research_dataset_hash(chart) if chart.get("dataset_version") == DATASET_VERSION
+        actual_hash = (research_dataset_hash(chart) if chart.get("dataset_version") in DATASET_VERSIONS
                        else dataset_hash(chart))
     except (TypeError, ValueError, KeyError):
         raise ValueError("研究数据内容无效，无法核验快照指纹。") from None
@@ -84,14 +88,14 @@ def _validate_chart(chart: dict) -> tuple[list[dict], int]:
                 raise ValueError
         except (KeyError, TypeError, ValueError):
             raise ValueError("研究 K 线时间或成交量无效。") from None
-        if volume <= 0:
+        if volume < 0 or (volume == 0 and market_kind == "continuous_spot"):
             raise ValueError("研究数据含零或负成交量；本阶段拒绝假定这些 K 线可以成交。")
-        if previous is not None and not math.isclose(timestamp - previous, seconds,
-                                                     rel_tol=0, abs_tol=1e-6):
+        if previous is not None and (timestamp <= previous or (market_kind == "continuous_spot" and
+                chart.get("timeframe") != "1M" and not math.isclose(timestamp - previous, seconds, rel_tol=0, abs_tol=1e-6))):
             raise ValueError("连续现货研究要求周期完整且时间升序；存在缺口、重复或未排序 K 线。")
         previous = timestamp
     quality = chart.get("quality", {})
-    if quality.get("missing_intervals", 0) != 0 or quality.get("gap_count", 0) != 0:
+    if market_kind == "continuous_spot" and (quality.get("missing_intervals", 0) != 0 or quality.get("gap_count", 0) != 0):
         raise ValueError("研究数据未覆盖完整请求范围，不能忽略首尾缺失区间后回测。")
     if (quality.get("requested_start", bars[0]["time"]) != bars[0]["time"] or
             quality.get("requested_end", bars[-1]["time"] + seconds) != bars[-1]["time"] + seconds or
@@ -112,6 +116,9 @@ def _positive_finite(value: float) -> float:
 def _simulate(bars: list[dict], values: list[float | None], start: int, end: int,
               config: ResearchConfig, entry: float, exit_: float, seconds: int,
               multiplier: int, *, benchmark: bool = False) -> dict:
+    if config.position_mode != "long_only" or config.quantity_step or config.contract_multiplier != 1:
+        return _simulate_positions(bars, values, start, end, config, entry, exit_, seconds,
+                                   multiplier, benchmark=benchmark)
     fee_rate = config.fee_bps / 10_000 * multiplier
     slip_rate = config.slippage_bps / 10_000 * multiplier
     cash, quantity, entry_cost = config.initial_capital, 0.0, 0.0
@@ -147,7 +154,7 @@ def _simulate(bars: list[dict], values: list[float | None], start: int, end: int
         trades.append({
             "time": bars[index]["time"] + (seconds if final else 0),
             "signal_time": bars[signal_index]["time"] if signal_index is not None else None,
-            "signal_at": bars[signal_index]["time"] + seconds if signal_index is not None else None,
+            "signal_at": min(bars[signal_index]["time"] + seconds, bars[index]["time"]) if signal_index is not None else None,
             "bar_index": index, "signal_bar_index": signal_index,
             "side": side, "reference_price": reference, "price": price,
             "quantity": traded_quantity, "fee": fee, "slippage_cost": slippage_cost,
@@ -158,10 +165,10 @@ def _simulate(bars: list[dict], values: list[float | None], start: int, end: int
     for index in range(start, end):
         bar = bars[index]
         # Each split starts flat. Its first close can signal only its second open.
-        if index > start:
+        if index > start and bar.get("volume", 1) > 0:
             previous = values[index - 1]
             if benchmark:
-                if index == start + 1:
+                if not trades:
                     fill("buy", index, bar["open"], "benchmark_entry")
             elif previous is not None:
                 enter = previous <= entry if config.direction == "below" else previous >= entry
@@ -173,7 +180,7 @@ def _simulate(bars: list[dict], values: list[float | None], start: int, end: int
         if quantity > 0:
             invested_bars += 1
         # Liquidation is a predeclared horizon rule, not a last-bar signal.
-        if index == end - 1 and quantity > 0:
+        if index == end - 1 and quantity > 0 and bar.get("volume", 1) > 0:
             fill("sell", index, bar["close"], "segment_end", final=True)
         equity = _positive_finite(cash + quantity * bar["close"])
         peak = max(peak, equity)
@@ -197,10 +204,99 @@ def _simulate(bars: list[dict], values: list[float | None], start: int, end: int
     }
 
 
+def _simulate_positions(bars, values, start, end, config, entry, exit_, seconds,
+                        multiplier, *, benchmark=False):
+    """One-times notional exposure, signed positions, optional whole lots/contracts."""
+    fee_rate = config.fee_bps / 10_000 * multiplier
+    slip_rate = config.slippage_bps / 10_000 * multiplier
+    unit = config.contract_multiplier
+    cash, quantity, entry_equity = config.initial_capital, 0., 0.
+    peak = cash
+    trades, curve, closed_pnls = [], [], []
+    fees = slippage = 0.
+    invested = 0
+
+    def transact(delta, index, reference, reason, *, final=False):
+        nonlocal cash, quantity, fees, slippage
+        price = reference * (1 + slip_rate if delta > 0 else 1 - slip_rate)
+        fee = abs(delta) * price * unit * fee_rate
+        slip = abs(delta) * abs(price - reference) * unit
+        cash -= delta * price * unit + fee
+        quantity += delta
+        fees += fee
+        slippage += slip
+        signal = index-1 if reason == "signal" else None
+        trades.append({"time": bars[index]["time"] + (seconds if final else 0),
+            "signal_time": bars[signal]["time"] if signal is not None else None,
+            "signal_at": min(bars[signal]["time"] + seconds, bars[index]["time"]) if signal is not None else None,
+            "bar_index": index, "signal_bar_index": signal,
+            "side": "buy" if delta > 0 else "sell", "reference_price": reference,
+            "price": price, "quantity": abs(delta), "signed_quantity": delta,
+            "contract_multiplier": unit, "fee": fee, "slippage_cost": slip,
+            "cash_after": cash, "position_after": quantity, "reason": reason, "pnl": None})
+
+    def target(sign, index, reference, reason, *, final=False):
+        nonlocal quantity, entry_equity
+        current_sign = 1 if quantity > 0 else -1 if quantity < 0 else 0
+        if sign == current_sign:
+            return
+        if quantity:
+            transact(-quantity, index, reference, reason, final=final)
+            pnl = cash - entry_equity
+            closed_pnls.append(pnl)
+            trades[-1]["pnl"] = pnl
+        if sign:
+            entry_equity = _positive_finite(cash)
+            price = reference * (1 + slip_rate if sign > 0 else 1 - slip_rate)
+            size = cash / (price * unit * (1 + fee_rate))
+            if config.quantity_step:
+                size = math.floor(size / config.quantity_step) * config.quantity_step
+            if size > 0:
+                transact(sign * size, index, reference, reason)
+
+    for index in range(start, end):
+        bar = bars[index]
+        tradable = bar.get("volume", 1) > 0
+        if index > start and tradable:
+            value = values[index-1]
+            if benchmark:
+                if not trades:
+                    target(1, index, bar["open"], "benchmark_entry")
+            elif value is not None:
+                enter = value <= entry if config.direction == "below" else value >= entry
+                leave = value >= exit_ if config.direction == "below" else value <= exit_
+                if config.position_mode == "long_short":
+                    if enter:
+                        target(1, index, bar["open"], "signal")
+                    elif leave:
+                        target(-1, index, bar["open"], "signal")
+                elif quantity == 0 and enter:
+                    target(-1 if config.position_mode == "short_only" else 1, index, bar["open"], "signal")
+                elif quantity and leave:
+                    target(0, index, bar["open"], "signal")
+        invested += bool(quantity)
+        if index == end-1 and quantity and tradable:
+            target(0, index, bar["close"], "segment_end", final=True)
+        equity = _positive_finite(cash + quantity * bar["close"] * unit)
+        peak = max(peak, equity)
+        curve.append({"time": bar["time"] + seconds, "equity": equity,
+                      "drawdown": max(0., 1-equity/peak)})
+    ending = curve[-1]["equity"]
+    return {"metrics": {"initial_capital": config.initial_capital, "ending_equity": ending,
+        "total_return": ending/config.initial_capital-1,
+        "max_drawdown": max(p["drawdown"] for p in curve), "net_pnl": ending-config.initial_capital,
+        "fees": fees, "slippage_cost": slippage, "closed_trades": len(closed_pnls),
+        "win_rate": sum(p>0 for p in closed_pnls)/len(closed_pnls) if closed_pnls else None,
+        "exposure": invested/(end-start), "open_position_at_end": quantity},
+        "equity_curve": curve, "trades": trades}
+
+
 def run_research(chart: dict, config: ResearchConfig, *,
                  values: list[float | None] | None = None, factor_label: str | None = None) -> dict:
     """Run one user-declared rule, with frozen train-only quantile thresholds."""
     bars, seconds = _validate_chart(chart)
+    if chart["market_kind"] == "stock" and config.position_mode != "long_only":
+        raise ValueError("股票模型采用做多/现金；做空研究请选择对应衍生品并配置期货或外汇市场。")
     count = len(bars)
     train_end = int(count * config.train_fraction)
     validation_end = train_end + int(count * config.validation_fraction)
@@ -210,7 +306,7 @@ def run_research(chart: dict, config: ResearchConfig, *,
         raise ValueError("按当前比例切分后，训练至少需 120 根，验证与测试各至少需 60 根。")
     if values is None:
         try:
-            evidence = compute_factors(restore_frame(chart))
+            evidence = compute_factors(restore_frame(chart), market_kind=chart["market_kind"])
         except (TypeError, KeyError, OverflowError):
             raise ValueError("研究数据不是有效的已收盘 OHLCV 快照。") from None
         factor = next(item for item in evidence["factors"] if item["id"] == config.factor)
@@ -222,7 +318,7 @@ def run_research(chart: dict, config: ResearchConfig, *,
         raise ValueError("研究公式序列必须与 K 线对齐且仅含有限数或空值。")
     else:
         # Supplied formula values must not bypass the ordinary closed/OHLC gate.
-        _validated_bars(restore_frame(chart))
+        _validated_bars(restore_frame(chart), market_kind=chart["market_kind"])
     training = [value for value in values[:train_end]
                 if value is not None and math.isfinite(value)]
     if len(training) < 60:
@@ -274,12 +370,22 @@ def run_research(chart: dict, config: ResearchConfig, *,
     ]
     if chart["source"] in {"csv", "demo"}:
         warnings.append("连续现货市场身份由用户声明；上传数据来源未经独立核验，示例数据不是真实行情。")
+    if chart["market_kind"] != "continuous_spot":
+        warnings[3] = (f"市场：{chart['market_kind']}；方向模式：{config.position_mode}；"
+                       f"合约乘数 {config.contract_multiplier:g}，数量步长 {config.quantity_step:g}。"
+                       "使用 1 倍名义敞口，不模拟保证金杠杆、融券、资金费率、税费、T+1 或涨跌停成交限制。")
+        warnings[6] = ("按实际观测的交易 K 线推进，保留隔夜跳空；休市不补 K 线。"
+                       "尚未连接交易日历，时段间隔不能自动区分休市与数据缺漏；零成交量时不执行新交易。")
+        warnings.append("股票复权、期货连续合约换月及成交量口径沿用数据源；未模拟换月交易。核对口径后比较同品种同周期结果。")
+        if chart["source"] in {"csv", "demo"}:
+            warnings = [w for w in warnings if not w.startswith("连续现货市场身份")]
     if any(segment["metrics"]["closed_trades"] == 0 for segment in segments.values()):
         warnings.append("至少一段没有完成交易；该段胜率为空，收益与因子有效性不能据此等同。")
     result = {
         "engine_version": ENGINE_VERSION, "feature_version": FEATURE_VERSION,
         "config": {**config.model_dump(), "factor": factor_label or config.factor},
         "dataset_hash": chart["dataset_hash"],
+        "market_kind": chart["market_kind"], "timeframe": chart["timeframe"],
         "thresholds": {"entry": entry, "exit": exit_, "training_samples": len(training),
                        "fit_segment": "train", "quantile_method": "linear"},
         "split": {"method": "chronological", "bar_count": count, **ranges},

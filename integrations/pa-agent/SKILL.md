@@ -12,13 +12,15 @@ pa-agent-cli.exe doctor
 pa-agent-cli.exe analyze --source tradingview --symbol XAUUSD --exchange OANDA --timeframe 15m --backend codex --output analysis.json
 pa-agent-cli.exe analyze --input bars.csv --symbol BTCUSD --timeframe 1h --backend hermes --output analysis.json
 pa-agent-cli.exe factors --input snapshot.json --output factors.json
+pa-agent-cli.exe research --source tradingview --symbol QQQ --exchange NASDAQ --timeframe 5m --bars 3000 --market-kind stock --output qqq-research.json
+pa-agent-cli.exe mine --source tradingview --symbol ES1! --exchange CME_MINI --timeframe 1h --bars 3000 --market-kind futures --config mining-config.json --output es-formula.json
 pa-agent-cli.exe research --input spot-history.csv --symbol BTCUSD --timeframe 1h --output research.json
 pa-agent-cli.exe mine --input dataset.json --config mining-config.json --output formula.json
 ```
 
 `--backend` 可选 codex、workbuddy、hermes、api。前三者使用各自已安装 CLI 的登录或模型配置，PA Agent 不要求复制 Key。默认使用保存的分析方式；指定模型时用 `--model`，否则保持 harness 默认。如果用户没有指定，选择已通过真实应答测试的后端。认证失败时让用户在该 harness 完成登录，不读取登录文件或输出密钥。
 
-研究 CSV 为 time,open,high,low,close,volume 六列、300–5000 根连续已收盘 K 线。回测仅适用于明确声明的连续现货市场、现金/多头模型；股票、期货可计算因子，但不要套用此回测。`--demo` 仅用于明确标注的模拟演示，不作为真实行情失败后的回退。
+行情可以直接使用 PA Agent 数据源、已保存快照，或导入 CSV。研究 CSV 为 time,open,high,low,close,volume 六列、300–5000 根已收盘 K 线。`--market-kind` 支持 continuous_spot、stock、futures、forex，支持分钟、小时、日和周周期。股票按多头/现金研究，期货及外汇可在配置中选择 `position_mode`（long_only / short_only / long_short），并设置 `quantity_step` 和 `contract_multiplier`。回测采用 1 倍名义敞口、下一根实际交易 K 线开盘执行；股票复权、期货连续合约换月采用数据源口径，保证金、资金费、T+1 和涨跌停成交约束未建模。`--demo` 仅用于明确标注的模拟演示。
 
 读取返回的 `ok`、异常、数据来源、时间、数据指纹及实际保存文件。区分 PA 模型结论、因子数值、训练段、验证段和测试段；不得把分位当胜率、把训练收益当样本外优势。保留原始行情、配置、费用/滑点和结果供复算。搜索取消或超时只留下检查点，不算完成。
 

@@ -12,8 +12,9 @@ from datetime import UTC, datetime
 from statistics import median
 
 from pa_agent.data.base import KlineBar, KlineFrame
+from pa_agent.quant.markets import TIMEFRAME_SECONDS
 
-FEATURE_VERSION = "alphagpt-causal-v1"
+FEATURE_VERSION = "alphagpt-causal-v2"
 WINDOW = 60
 MIN_PERIODS = 20
 CLIP = 5.0
@@ -21,6 +22,7 @@ _DURATIONS_MS = {
     "1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
     "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000, "1w": 604_800_000,
 }
+_DURATIONS_MS.update({key: seconds * 1000 for key, seconds in TIMEFRAME_SECONDS.items() if key != "1M"})
 _META = (
     ("RET", "对数收益", "相邻已收盘 K 线的收盘价对数收益；时间间隔不连续时留空。", "log_return"),
     ("LIQ", "流动性健康度", "需要同一历史时点的流动性和 FDV；OHLCV 无法计算。", "ratio"),
@@ -42,7 +44,7 @@ def _bar_end_ms(bar: KlineBar, timeframe: str) -> int:
     raise ValueError("量化因子不支持该 K 线周期。")
 
 
-def _validated_bars(frame: KlineFrame) -> tuple[list[KlineBar], list[int]]:
+def _validated_bars(frame: KlineFrame, *, market_kind="continuous_spot") -> tuple[list[KlineBar], list[int]]:
     """Reject bad snapshots instead of silently repairing or filtering their bars."""
     if frame.timeframe not in {*_DURATIONS_MS, "1M"}:
         raise ValueError("量化因子不支持该 K 线周期。")
@@ -69,9 +71,14 @@ def _validated_bars(frame: KlineFrame) -> tuple[list[KlineBar], list[int]]:
             end = _bar_end_ms(bar, frame.timeframe)
         except (ValueError, OverflowError, OSError):
             raise ValueError("行情 K 线时间超出有效范围。") from None
+        if market_kind != "continuous_spot":
+            if bar.ts_open >= frame.snapshot_ts_local_ms:
+                raise ValueError("行情快照包含未来 K 线。")
+            end = min(end, frame.snapshot_ts_local_ms)
         if end > frame.snapshot_ts_local_ms:
             raise ValueError("行情快照包含尚未收盘的 K 线。")
-        if ends and bar.ts_open < ends[-1] - 1:
+        calendar_bar = frame.timeframe in {"1d", "3d", "1w", "1M"} and market_kind != "continuous_spot"
+        if ends and bar.ts_open < ends[-1] - 1 and not calendar_bar:
             raise ValueError("行情快照包含时间重叠的 K 线。")
         previous = bar.ts_open
         ends.append(end)
@@ -96,7 +103,7 @@ def _normalize(values: list[float | None]) -> tuple[list[float | None], list[flo
     return normalized, percentiles
 
 
-def compute_factors(frame: KlineFrame) -> dict:
+def compute_factors(frame: KlineFrame, *, market_kind="continuous_spot") -> dict:
     """Return finite, causal factors over exactly the supplied immutable snapshot.
 
     Invalid/forming bars raise ``ValueError``. Empty valid snapshots produce an
@@ -105,10 +112,12 @@ def compute_factors(frame: KlineFrame) -> dict:
     cannot distinguish closed sessions from missing data; lagged values across
     those boundaries are withheld, but observed-candle windows remain usable.
     """
-    bars, ends = _validated_bars(frame)
+    bars, ends = _validated_bars(frame, market_kind=market_kind)
     count = len(bars)
     adjacent = [False] + [abs(bars[i].ts_open - ends[i - 1]) <= 1
                           for i in range(1, count)] if count else []
+    if market_kind != "continuous_spot" and count:
+        adjacent = [False] + [True] * (count - 1)
     raw: dict[str, list[float | None]] = {item[0]: [] for item in _META}
     for index, bar in enumerate(bars):
         ret = (math.log(bar.close) - math.log(bars[index - 1].close)
@@ -169,6 +178,9 @@ def compute_factors(frame: KlineFrame) -> dict:
         flags.append({"code": "calendar_unverified",
                       "message": f"发现 {discontinuities} 处时间间隔不连续；未提供交易日历，"
                                  "无法区分休市与缺失数据。滞后因子跨间隔留空，滚动窗口按已观测 K 线计数。"})
+    if market_kind != "continuous_spot":
+        flags.append({"code": "observed_trading_bars", "message":
+            "因子按数据源提供的相邻交易 K 线计算，保留隔夜/周末跳空，不补造休市 K 线。未接入交易日历，休市与数据缺漏需结合来源核对。"})
     if any(f["status"] == "warming_up" for f in factors):
         flags.append({"code": "insufficient_history",
                       "message": "部分因子尚在预热；归一化和历史分位需最近 60 根内至少 20 个有效值。"})

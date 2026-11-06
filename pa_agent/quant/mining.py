@@ -61,11 +61,13 @@ class MiningSession:
         if (self.train_end < 120 or validation_count < 60 or
                 len(self.bars) - self.train_end - validation_count < 60):
             raise ValueError("公式研究需要训练至少 120 根，验证和测试各至少 60 根。")
-        evidence = compute_factors(restore_frame(self.chart))
+        evidence = compute_factors(restore_frame(self.chart), market_kind=self.chart["market_kind"])
         self.features = {item["id"]: [point["normalized"] for point in item["series"]]
                          for item in evidence["factors"] if item["id"] in FEATURES}
         self.training_features = {name: values[:self.train_end]
                                   for name, values in self.features.items()}
+        if self.chart["market_kind"] == "stock" and config.research.position_mode != "long_only":
+            raise ValueError("股票因子挖掘采用做多/现金模型。")
         training_hash = _digest({
             "source": chart["source"], "instrument": chart["instrument"],
             "market_kind": chart["market_kind"], "timeframe": chart["timeframe"],
