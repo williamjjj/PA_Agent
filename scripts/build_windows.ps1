@@ -2,6 +2,8 @@ param([string]$Python = '.local\build-venv\Scripts\python.exe', [string]$Iscc = 
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $root
+& $Python -c "from setuptools import setup; setup(script_args=['egg_info'])"
+if ($LASTEXITCODE -ne 0) { throw 'Application version metadata update failed' }
 & $Python -m PyInstaller --noconfirm packaging\pa_agent.spec
 if ($LASTEXITCODE -ne 0) { throw 'Portable build failed' }
 Set-Content -LiteralPath dist\PA-Agent\portable.flag -Value 'Keep runtime data in the adjacent data directory.' -Encoding utf8

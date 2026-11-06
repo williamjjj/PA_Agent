@@ -25,6 +25,7 @@ UninstallDisplayIcon={app}\PA-Agent.exe
 [InstallDelete]
 ; Replace only this application's version metadata during an in-place update.
 Type: filesandordirs; Name: "{app}\_internal\pa_agent-*.dist-info"
+Type: filesandordirs; Name: "{app}\_internal\pa_agent.egg-info"
 
 [Files]
 ; Match the root user-data folder only; provider packages also contain data/.
